@@ -1,0 +1,48 @@
+#!/bin/bash
+
+set -uo pipefail -o noclobber -o nounset
+shopt -s inherit_errexit
+
+__current_directory="$(pwd -P)/"
+export __current_directory
+
+handle_error() {
+	# @source https://gist.github.com/bkahlert/08f9ec3b8453db5824a0aa3df6a24cb4
+	local esc_red esc_reset; esc_red=$(tput setaf 1 || true); esc_reset=$(tput sgr0 || true)
+	printf "%s %s\n\tin program:\t %s\n\tat location:\t %s\n\tat line:\t %s\n" "${esc_red-}✘${esc_reset-}" "${esc_red-}$(errno "$1" )${esc_reset-}" "${0##*/}"  "$3" "$2" >&2
+	exit "$1"
+}
+
+trap 'handle_error "$?" "${BASH_COMMAND:-?}" "${FUNCNAME[0]:-main}(${BASH_SOURCE[0]:-?}:${LINENO:-?})"' ERR
+
+function array_contains()
+{
+	local token="$1"
+	shift
+
+	for element in "$@"; do
+		[[ "$token" == "$element" ]] && return 0
+	done
+
+	return 1
+}
+
+function set_script_path()
+{
+	local former_directory
+	former_directory="$(pwd)"
+
+	local source="${BASH_SOURCE[-1]}"
+	while [[ -L "$source" ]]; do # resolve $source until the file is no longer a symlink
+		local directory
+		directory="$(cd -P "$(dirname -- "$source")" > "/dev/null" 2>&1 && pwd)"
+		source="$(readlink -- "$source")"
+		[[ "$source" != /* ]] && source="$directory/$source" # if $source was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+	done
+
+	__script_path="$(cd -P "$(dirname -- "$source")" > "/dev/null" 2>&1 && pwd)"
+	cd -- "$former_directory" || exit 1
+
+	export __script_path
+}
+

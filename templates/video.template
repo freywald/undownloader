@@ -1,0 +1,7 @@
+#!/bin/bash
+
+source -- "$__script_path/templates/video.configuration"
+
+__download_urls \
++ \
+! \

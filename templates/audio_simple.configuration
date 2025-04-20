@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# AUDIO-SIMPLE QUEUE
+#
+# downloads audio files into an mka container file with thumbnails, subtitles & chapters all embedded
+#
+#
+
+# CONFIGURATION
+__download_with_configuration \
+`# run yt-dlp with these options:…` \
+yt-dlp \
+--live-from-start \
+--windows-filenames \
+--output-na-placeholder "UNKNOWN_PLACEHOLDER_DEBUG_REMOVE" \
+`# show progress` \
+--console-title --progress --newline \
+`# output file template` \
+--parse-metadata "%(title|)s:%(title_with_separator)s" \
+--replace-in-metadata "title_with_separator" "\s-\s" " – " \
+-o 'files/%(channel)s/%(title_with_separator,title)s.%(ext)s' \
+`# quality and file format` \
+--extract-audio \
+--remux mka \
+`# thumbnails` \
+--convert-thumbnails png \
+--embed-thumbnail \
+`# subtitles` \
+--sub-lang en \
+--convert-subs srt \
+--embed-subs \
+`# embed files` \
+--embed-metadata \
+--embed-info-json \
+--embed-chapters \
+--no-write-description \
+--no-write-info-json \
+--no-write-playlist-metafiles \
+--no-write-comments \

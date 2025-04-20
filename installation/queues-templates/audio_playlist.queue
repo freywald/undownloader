@@ -1,0 +1,7 @@
+#!/bin/bash
+
+source -- "$__script_path/templates/audio_playlist.template"
+
+__download_urls \
++ \
+! \

@@ -1,0 +1,588 @@
+#!/bin/bash
+source -- "base"
+set_script_path
+source -- "$__script_path/configuration/defaults"
+
+# defaults
+local_run=true
+force_download=false
+debug=false
+quiet=false
+verbose=false
+simulate=false
+ban_evasion=false
+scrape_comments=false
+regenerate_queue=false
+target_directory=""
+from_file=""
+base_directory="${default_target_directory:?}"
+default_queues=()
+link_known_fail_list_full_file_path=""
+
+mkdir --parents -- "$__script_path/var/archive/"
+mkdir --parents -- "$__script_path/var/template-instances/"
+
+#parse commandline options
+getopt --test > "/dev/null" && true
+if (( $? != 4 )); then
+	echo>&2 "Error: 'getopt --test' failed in this environment!"
+	exit 1
+fi
+
+forwarded_parameters=()
+
+long_options="run,no-local,force-download,verbose,quiet,debug,simulate,regenerate-queue,update,ban-evasion,comments,from-file:,target-directory:"
+short_options=":"
+original_program_arguments="$*"
+parsed_options=$(getopt --options="$short_options" --longoptions="$long_options" --name "$0" -- "$@") || true
+eval "set -- $parsed_options"
+
+while (($#)); do
+	case "$1" in
+		--run)
+			:
+			;;
+		--no-local)
+			local_run=false
+			;;
+		--comments)
+			scrape_comments=true
+			;;
+		--ban-evasion)
+			ban_evasion=true
+			;;
+		--force-download)
+			force_download=true
+			;;
+		--simulate)
+			simulate=true
+			;;
+		--regenerate-queue|--update)
+			regenerate_queue=true
+			;;
+		--quiet)
+			quiet=true
+			forwarded_parameters+=( "$1" )
+			;;
+		--verbose)
+			verbose=true
+			;;
+		--debug)
+			debug=true
+			;;
+		--from-file)
+			from_file="$2"
+			;;
+		--target-directory)
+			target_directory="$2"
+			mkdir --parents -- "$target_directory/"
+			base_directory="$target_directory"
+			;;
+		--)
+			shift
+			break
+			;;
+		*)
+			;;
+	esac
+	shift
+done
+
+known_parameters=(
+"--run"
+"--no-local"
+"--comments"
+"--ban-evasion"
+"--force-download"
+"--simulate"
+"--update"
+"--regenerate-queue"
+"--verbose"
+"--debug"
+"--from-file"
+"--target-directory"
+)
+
+for parameter in $original_program_arguments; do
+	name="${parameter%=*}"
+	if ! array_contains "$name" "${known_parameters[@]}"; then
+		if [[ "${name:0:2}" == "--" ]]; then
+			forwarded_parameters+=( "$parameter" )
+		fi
+	fi
+done
+
+current_date="$(date +%Y%m%d%H%M%S)"
+download_archive=""
+if [[ "$local_run" == "true" ]]; then
+	local_run=true
+else
+	local_run=false
+fi
+if [[ "$force_download" == "true" ]]; then
+	force_download=true
+else
+	force_download=false
+fi
+if [[ "$verbose" == "true" ]]; then
+	verbose=true
+else
+	verbose=false
+fi
+if [[ "$quiet" == "true" ]]; then
+	quiet=true
+else
+	quiet=false
+fi
+if $verbose && $quiet; then
+	echo "ERROR! Program options '--verbose' and '--quiet' are mutually exclusive." >&2
+	exit 1
+fi
+if [[ "$simulate" == "true" ]]; then
+	simulate=true
+else
+	simulate=false
+fi
+if [[ "$regenerate_queue" == "true" ]]; then
+	regenerate_queue=true
+else
+	regenerate_queue=false
+fi
+
+if $local_run; then
+	file="$(ls -- ./*".sources" 2> "/dev/null")" || file="" # take the first sources file
+	if [[ "$file" != "" ]]; then
+		template_base_name="$(basename -- "${file%.*}")" # the base file name specifies also the name of the download template
+		from_file="$template_base_name:$file"
+		target_directory="files"
+		mkdir --parents -- "$target_directory/"
+		base_directory="$target_directory"
+	fi
+fi
+
+#eval set -- "${forwarded_parameters[*]}"
+cd "$base_directory/" || exit 1
+
+mkdir --parents -- "$__script_path/var/logs/"
+log="$__script_path/var/logs/application.log"
+touch -- "$log"
+
+given_queues=("$@")
+
+trap 'echo -e "\n\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\nCaught SIGNINT/CTR+C. Program aborted.\n\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\n";if [[ -s "$queue_failed_items_log_file" ]]; then list_failed_downloads; fi;echo -e "\n\n";exit 1' SIGINT
+
+function __download_with_configuration() {
+	# linearized array data with arbitrary wideness
+	queue_configuration_options+=("$@")
+	queue_configuration_options_wideness+=($#)
+	((queue_configuration_options_count++))
+}
+
+function __download_urls() {
+	data+=("$@")
+}
+
+function list_failed_downloads() {
+	if [[ -s "$queue_failed_items_log_file" ]]; then
+		known_to_fail=()
+		echo -e "██  List of failed items:"
+		while IFS= read -r item; do
+			if [[ -f "$link_known_fail_list_full_file_path" ]] && grep -Fxq "$item" "$link_known_fail_list_full_file_path"; then
+				known_to_fail+=("$item")
+			else
+				echo -e "██  \t\t\t\t\t\t  • $item"
+			fi
+		done < "$queue_failed_items_log_file"
+		! $quiet && echo -e "██"
+		echo -e "██  List of items known to fail:"
+		for item in "${known_to_fail[@]}"; do
+		   echo -e "██  \t\t\t\t\t\t  • $item"
+		done
+	else
+		echo -e "██  List of failed items:\t\tNONE"
+	fi
+}
+
+function run_queue() {
+	queue_name="$1"
+	queue_file="$2"
+
+	local_queue_file_name="queue-$queue_name.queue"
+
+	queue_log_file="$__script_path/var/logs/queue-$queue_name.log"
+	touch -- "$queue_log_file"
+
+	queue_failed_items_log_file="$__script_path/var/logs/queue-$queue_name-date-$current_date-failed-items.log"
+    touch -- "$queue_failed_items_log_file"
+
+	! $quiet && echo -e "\n\n"
+	! $quiet && echo -e "███████████████████████████████████████████████████████████████████████████████"
+	! $quiet && echo -e "██"
+	echo -e "██  INFORMATION:\t\t\t\tStart of processing queue '$queue_base_name'."
+	$debug && echo -e "██  \t\t\t\t\t\t\tFIXED"
+	! $quiet && echo -e "██"
+	! $quiet && echo -e "██"
+	! $quiet && echo -e "██  Log file:\t\t\t\t\t$queue_log_file"
+	! $quiet && echo -e "██"
+	! $quiet && echo -e "██"
+	! $quiet && echo -e "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔"
+	! $quiet && echo -e "\n"
+	$quiet && echo -e "\n"
+
+	length=1
+	current_line_number=1
+	i=0
+
+	queue_configuration_options_count=0
+	queue_configuration_options=()
+	queue_configuration_options_wideness=()
+
+	data=()
+	data_bag=()
+	data_bag_item_count=1
+	data_bag_line_marker_wideness_search_start=true
+	data_bag_line_wideness=2
+
+	if [[ "${queue_file:0:1}" != "/" ]]; then
+		queue_file="$(realpath --quiet -- "$__script_path/var/queues/$queue_file.queue")"
+	fi
+
+	if [[ ! -f "$queue_file" ]]; then
+		echo>&2 "ERROR: queue file '$queue_file' does not exist"
+		exit 1
+	fi
+
+	# shellcheck source=/dev/null
+	source -- "$queue_file"
+
+	data_length_counter=${#data[@]}
+	data_items_processed=0
+	data_items_ignored=0
+	data_items_failed=0
+	data_bag_incomplete=false
+
+	for line in "${data[@]}"; do	
+		((data_length_counter--))
+
+		# insert marker found, continue
+		if [[ "${line:0:1}" == "+" ]]; then
+			((data_items_ignored--))
+			continue
+		fi
+
+		# stop marker found, exit
+		if [[ "${line:0:1}" == "!" ]]; then
+			if $data_bag_incomplete; then
+				echo "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO WIDE AT DATA ROW $((data_items_processed-data_items_ignored))" >&2
+            	exit 1
+			fi
+			((data_items_ignored--))
+
+			echo -e "\n\n"
+           	! $quiet && echo -e "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
+			! $quiet && echo -e "██"
+
+			if (( data_length_counter > 0 )); then
+            	echo -e "██  WARNING: process queue execution exists early, because a stop marker"
+            	echo -e "██           has been reached. This means that some data was not processed"
+            	echo -e "██           and data entries after the stop marker were skipped."
+            	echo -e "██           Last processed item: $((data_items_processed))"
+			elif (( data_items_processed == 0 )); then
+				echo -e "██  INFORMATION:\t\t\t\tqueue is empty."
+			else
+				echo -e "██  INFORMATION:\t\t\t\tqueue processing is now completed."
+            fi
+            $debug && echo -e "██  \t\t\t\t\t\t\tFIXED"
+			! $quiet && echo -e "██"
+            ! $quiet && echo -e "██"
+			echo -e "██  Queue:\t\t\t\t\t\t$queue_base_name"
+			! $quiet && echo -e "██"
+			echo -e "██  Items processed count:\t\t$data_items_processed"
+			! $quiet && echo -e "██"
+			echo -e "██  Items failed count:\t\t\t$data_items_failed"
+			! $quiet && echo -e "██"
+			list_failed_downloads
+			! $quiet && echo -e "██"
+			! $quiet && echo -e "███████████████████████████████████████████████████████████████████████████████"
+			! $quiet && echo -e "\n\n"
+
+			break
+		fi
+
+		if (( data_length_counter == 0 )); then
+			echo -e "\n\n"
+            ! $quiet && echo -e "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
+			! $quiet && echo -e "██"
+			echo -e "██  Queue:\t\t\t\t$queue_base_name"
+			! $quiet && echo -e "██"
+			! $quiet && echo -e "██"
+            echo -e "██  INFORMATION: queue is empty."
+			$debug && echo -e "██  \t\t\t\t\t\t\tFIXED"
+			! $quiet && echo -e "██"
+			echo -e "██  Items processed count:\t$data_items_processed"
+			! $quiet && echo -e "██"
+			echo -e "██  Items failed count:\t\t$data_items_failed"
+			! $quiet && echo -e "██"
+			list_failed_downloads
+			! $quiet && echo -e "██"
+			! $quiet && echo -e "███████████████████████████████████████████████████████████████████████████████"
+			! $quiet && echo -e "\n\n"
+		fi
+
+		if $data_bag_line_marker_wideness_search_start; then
+			data_bag_line_marker_wideness_search_start=false
+
+            if [[ ! "$line" =~ ^[0-9]+$ ]] ; then
+               echo "ERROR! MALFORMED QUEUE DATA BAG: INVALID WIDENESS VALUE AT DATA ROW $((data_items_processed-data_items_ignored))" >&2
+               exit 1
+            fi
+			data_bag_line_wideness=$((line+0))
+			data_bag_item_count=1
+			data_bag=()
+
+			continue
+		else
+			((data_bag_item_count++))
+
+			if (( data_bag_item_count < data_bag_line_wideness )); then
+				data_bag+=("$line")
+				data_bag_incomplete=true
+
+				continue # to collect data items
+			fi
+
+			data_bag_incomplete=false
+
+			reversed_data_bag=()
+			for (( i=${#data_bag[@]}-1; i>=0; i-- )); do
+				local value="${data_bag[i]}"
+				if $force_download && [[ -f "$local_queue_file_name" ]] && [[ "$value" = "--download-archive="* ]]; then
+					: # filter parameter instance '--download-archive' in '--from-file'-mode, so the queue archive index file can be ignored thus '--force' can be enforced properly
+				else
+					reversed_data_bag+=("$value")
+				fi
+			done
+
+			url_cursor=$((${#reversed_data_bag[@]}-1))
+			if (( url_cursor <0 )); then
+				echo "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO NARROW AT DATA ROW $((data_items_processed-data_items_ignored))" >&2
+				exit 1
+			fi
+
+			url="${reversed_data_bag[$url_cursor]}"
+
+			for forward_parameter in "${forwarded_parameters[@]}"; do
+				reversed_data_bag+=( "$forward_parameter" )
+			done
+
+			unset 'reversed_data_bag[url_cursor]'
+			reversed_data_bag+=("--")
+			reversed_data_bag+=("$url")
+
+			data_bag_line_marker_wideness_search_start=true
+		fi
+
+		((data_items_processed++))
+
+		cursor=0
+		for (( r = 0; r < queue_configuration_options_count; r++)); do
+			wideness="${queue_configuration_options_wideness[r]}"
+
+			queue_parameters=()
+			for queue_configuration_option in "${queue_configuration_options[@]:$cursor:$wideness}"; do
+				queue_parameters+=("$queue_configuration_option")
+			done
+
+			if $force_download; then
+				queue_parameters+=("--download-archive=$download_archive")
+			fi
+			if $verbose; then
+				queue_parameters+=("--no-quiet" "--verbose") # yt-dlp-specific
+			fi
+			if $debug; then
+				queue_parameters+=("--no-quiet" "--verbose") # yt-dlp-specific
+			fi
+			if $ban_evasion; then # yt-dlp-specific
+				queue_parameters+=("--sleep-requests" "1.25" "--min-sleep-interval" "3" "--max-sleep-interval" "12" "--no-cookies")
+			fi
+			if $scrape_comments; then # yt-dlp-specific
+				queue_parameters+=("--write-comments")
+			fi
+			if [[ -n "$target_directory" ]]; then
+				queue_parameters+=("--paths=.") # yt-dlp-specific
+			else
+				queue_parameters+=("--paths=$base_directory") # yt-dlp-specific
+			fi
+
+			((cursor+=wideness))
+
+			! $quiet && echo -e "███████████████████████████████████████████████████████████████████████████████"
+			! $quiet && echo -e "██"
+			! $quiet && echo -e "██  Queue:\t\t\t\t\t\t$queue_base_name"
+			$debug && echo -e "██"
+			$debug && echo -e "██  Log file:\t\t\t$queue_log_file"
+			! $quiet && echo -e "██"
+			$quiet && echo "$url"
+			! $quiet && echo -e "██  Resource:\t\t\t\t\t$url"
+			$debug && echo -e "██  \t\t\t\t\t\t\tFIXED"
+			$debug && echo -e "██"
+			$debug && echo -e "██"
+			$debug && echo -e "${queue_parameters[*]} ${reversed_data_bag[*]}\n"
+			! $quiet && echo -e "\n"
+
+			return_value=0
+			if ! $simulate; then
+				$debug && set -x
+
+				# Executes target program!
+                # The first argument of queue_parameters is the program executable name, see: __download_with_configuration yt-dlp […]
+				"${queue_parameters[@]}" "${reversed_data_bag[@]}" 2> >(tee -a -- "$log")
+				return_value=$?
+
+				$debug && set +x
+			fi
+
+			if (( return_value != 0 )); then
+				echo -e "\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔"
+				echo -e "ERROR:     \t\t\t\t\t\tDOWNLOAD FAILED!"
+				echo -e "\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔"
+				echo "$url" >> "$queue_failed_items_log_file"
+				((data_items_failed++))
+			else
+				! $quiet && echo -e "\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔"
+                ! $quiet && echo -e "     \t\t\t\t\t\t\tSUCCESS!"
+                ! $quiet && echo -e "\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\n\n\n"
+			fi
+			echo "${reversed_data_bag[@]}" >> "$queue_log_file"
+
+		done
+
+		((current_line_number+=1))
+		((i+=length))
+	done
+
+	if $force_download && [[ -e "$download_archive" ]]; then # yt-dlp-specific
+		cat "${yt_ylp_default_download_index:?}" "$download_archive" >| "${yt_ylp_default_download_index:?}.tmp" && mv "${yt_ylp_default_download_index:?}.tmp" "${yt_ylp_default_download_index:?}"
+	fi
+}
+
+function run_default_queues() {
+	for file in "$__script_path/var/queues"/*.queue; do
+		[[ -e "$file" ]] || continue
+
+		queue_base_name="$(basename -- "${file%.*}")"
+		queue_full_file_path="$__script_path/var/queues/$queue_base_name.queue"
+
+		if (( ${#default_queues[@]} != 0 )); then
+			if array_contains "$queue_base_name" "${default_queues[@]}"; then
+				download_archive="$__script_path/var/archive/queue-$queue_base_name-date-$current_date.index"
+				run_queue "$queue_base_name" "$queue_full_file_path"
+			fi
+		else
+			download_archive="$__script_path/var/archive/queue-$queue_base_name-date-$current_date.index"
+			run_queue "$queue_base_name" "$queue_full_file_path"
+		fi
+	done
+}
+
+if [[ -n "$from_file" ]]; then
+	if (( ${#given_queues[@]} != 0 )); then
+		echo>&2 "ERROR: use option '--from-file' only to download from a file OR supply existing queues [ supplied was: ${given_queues[*]} ]"
+		exit 1
+	fi
+
+	template_name="${from_file%:*}"
+	link_list_name="${from_file#*:}"
+	if [[ "$link_list_name" == "$template_name" ]]; then
+		template_name="audio"
+	fi
+
+	link_list_full_file_path="$link_list_name"
+	if [[ "${link_list_name:0:1}" != "/" ]]; then
+		link_list_full_file_path="$(realpath --quiet -- "${__current_directory:?}/$link_list_full_file_path")"
+	fi
+
+	link_known_fail_list_full_file_path="$(realpath --quiet -- "${__current_directory:?}/${link_list_name%.*}.failed")"
+
+	queue_template_full_file_path="$__script_path/templates/$template_name.template"
+	if [[ ! -f "$queue_template_full_file_path" ]]; then
+		echo>&2 "ERROR: queue template file '$queue_template_full_file_path' does not exist"
+		exit 1
+	fi
+
+	local_download_index="queue-$template_name.index"
+	local_queue="queue-$template_name.queue"
+
+###
+	#local_log_file_full_file_path="queue-$queue_name.log"
+	#local_log_file_full_file_path="$(realpath --quiet -- "$local_log_file_full_file_path")"
+	#touch -- "$local_log_file_full_file_path"
+
+	#local_log_file_failed_items_log_file_full_file_path="date-$current_date.queue-$queue_name.failed.log"
+	#local_log_file_failed_items_log_file_full_file_path="$(realpath --quiet -- "$local_log_file_failed_items_log_file_full_file_path")"
+   # touch -- "$local_log_file_failed_items_log_file_full_file_path"
+###
+
+	if $regenerate_queue; then
+		# shellcheck disable=SC2064
+		trap "[[ ! -e \"$local_queue\" && -e \"$local_queue.backup\" ]] && mv -- \"$local_queue.backup\" \"$local_queue\" && echo -e \"\\n\\nAborted. Queue file '$local_queue' was restored from backup!\"" EXIT QUIT
+
+		[[ -e "$local_queue" ]] && mv -- "$local_queue" "$local_queue.backup"
+	fi
+
+	if [[ -f "$local_queue" ]]; then
+		if $force_download; then
+			download_archive="$__script_path/var/archive/queue-$template_name-date-$current_date.index"
+		else
+			download_archive="$local_download_index"
+		fi
+
+		queue_base_name="$template_name"
+		queue_full_file_path="$(realpath --quiet -- "$local_queue")"
+
+		$debug && cat "$queue_full_file_path"
+		run_queue "$template_name" "$queue_full_file_path"
+	else
+		download_archive="$local_download_index"
+		if $regenerate_queue; then
+			if [[ -f "$download_archive" ]]; then
+				mv -- "$download_archive" "$download_archive.backup"
+			fi
+		fi
+
+		echo -e "██  generating queue:\t\t$template_name\n"
+
+		# shellcheck disable=SC1090
+		source -- "$__script_path/enqueue-data-from-file" --create-from-template --force "$template_name" "$link_list_full_file_path" "$download_archive"
+
+		echo -e "\n\n"
+
+		returned_queue_identifier=${__queue_identifier:?}
+		queue_base_name="${returned_queue_identifier%:*}"
+		queue_full_path="${returned_queue_identifier#*:}"
+
+		$debug && cat "$queue_full_path"
+
+		force_download=false # disabled, because the generated queue contains another parameter instance, you can't have two or multiple [only the last will be taken]
+		run_queue "$queue_base_name" "$queue_full_path"
+
+		cp -- "$queue_full_path" "$local_queue"
+
+		remote_download_archive="$__script_path/var/archive/queue-$queue_base_name-date-$current_date.index"
+		if [[ -f "$local_download_index" ]]; then
+			cp -- "$local_download_index" "$remote_download_archive"
+		fi
+	fi
+
+	exit 1
+fi
+
+if (( ${#given_queues[@]} != 0 )); then
+	for queue_full_path in "${given_queues[@]}"; do
+		queue_base_name="$(basename -- "${queue_full_path%.*}")"
+		download_archive="$__script_path/var/archive/queue-$queue_base_name-date-$current_date.index"
+		run_queue "$queue_base_name" "$queue_full_path"
+	done
+else
+	run_default_queues
+fi

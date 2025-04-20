@@ -1,0 +1,47 @@
+#!/bin/bash
+
+function get_library_path()
+{
+	local former_directory
+	former_directory="$(pwd)"
+
+	local source="${BASH_SOURCE[0]}"
+	while [[ -L "$source" ]]; do # resolve $source until the file is no longer a symlink
+		local directory
+    	directory="$(cd -P "$(dirname -- "$source")" > "/dev/null" 2>&1 && pwd)"
+
+		source="$(readlink -- "$source")"
+		[[ "$source" != /* ]] && source="$directory/$source" # if $source was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+	done
+
+	cd -P "$(dirname -- "$source")/../" > "/dev/null" 2>&1 && pwd
+	cd -- "$former_directory" || exit 1
+}
+
+function d() {
+	local queue_name
+	queue_name="$1"
+	shift
+
+	"$(get_library_path)/handlers/enqueue" "$queue_name" "$@"
+}
+
+function dv() {
+	"$(get_library_path)/handlers/enqueue-video" "$@"
+}
+
+function dap() {
+	"$(get_library_path)/handlers/enqueue-audio_playlist" "$@"
+}
+
+function dav() {
+	"$(get_library_path)/handlers/enqueue-audio+video" "$@"
+}
+
+function da() {
+	"$(get_library_path)/handlers/enqueue-audio" "$@"
+}
+
+function das() {
+	"$(get_library_path)/handlers/enqueue-audio" "$@"
+}

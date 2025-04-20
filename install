@@ -1,0 +1,30 @@
+#!/bin/bash
+
+set -uo pipefail -o noclobber -o nounset
+shopt -s inherit_errexit
+#set -x
+
+handle_error() {
+	# @source https://gist.github.com/bkahlert/08f9ec3b8453db5824a0aa3df6a24cb4
+	local esc_red esc_reset; esc_red=$(tput setaf 1 || true); esc_reset=$(tput sgr0 || true)
+	printf "%s %s\n\tin program:\t %s\n\tat location:\t %s\n\tat line:\t %s\n" "${esc_red-}✘${esc_reset-}" "${esc_red-}$(errno "$1" )${esc_reset-}" "${0##*/}"  "$3" "$2" >&2
+	exit "$1"
+}
+
+trap 'handle_error "$?" "${BASH_COMMAND:-?}" "${FUNCNAME[0]:-main}(${BASH_SOURCE[0]:-?}:${LINENO:-?})"' ERR
+
+sudo apt install moreutils
+
+if [[ ! -e "configuration/defaults" ]]; then
+	cp "configuration/defaults.example" "configuration/defaults"
+fi
+
+if [[ ! -d "var/queues" ]]; then
+	mkdir --parents -- "var/queues"
+	cp "installation/queues-templates/"* "var/queues"
+fi
+
+# shellcheck disable=SC2016
+echo 'source -- "$HOME/bin/applications/undownloader/configuration/aliases"' >> "$HOME/.bash_aliases"
+set +x
+echo -ne "\n\nSUCCESS!\n"

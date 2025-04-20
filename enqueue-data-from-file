@@ -1,0 +1,90 @@
+#!/bin/bash
+
+if (( $# < 2 )); then
+	echo "Usage: $0 <file location of file, read line by line, line termination by newline character>"
+	exit 1
+fi
+
+source -- "base"
+set_script_path
+force_download=false
+create_from_template=false
+
+# parse commandline options
+getopt --test > "/dev/null" && true
+if (( $? != 4 )); then
+	echo>&2 "ERROR: 'getopt --test' failed in this environment!"
+	exit 1
+fi
+
+long_options="force,create-from-template"
+short_options=""
+parsed_options=$(getopt --options="$short_options" --longoptions="$long_options" --name "$0" -- "$@") || exit 2
+eval set -- "$parsed_options"
+
+while true; do
+	case "$1" in
+		-f|--force)
+			force_download=true
+			shift
+			;;
+		--create-from-template)
+			create_from_template=true
+			shift
+			;;
+		--)
+			shift
+			break
+			;;
+		*)
+			echo>&2 "ERROR: Programming error!"
+			exit 3
+			;;
+	esac
+done
+
+if [[ "$force_download" == "true" ]]; then
+	force_download=true
+else
+	force_download=false
+fi
+if [[ "$create_from_template" == "true" ]]; then
+	create_from_template=true
+else
+	create_from_template=false
+fi
+
+queue_name="$1"
+shift
+
+list_file_name="$1"
+shift
+
+download_index="$1"
+shift
+
+current_date="$(date +%Y%m%d%H%M%S)"
+queue_full_file_path=""
+
+if $create_from_template; then
+	queue_full_file_path="$__script_path/var/template-instances/queue-$queue_name-date-$current_date.queue"
+	cp -- "$__script_path/templates/$queue_name.template" "$queue_full_file_path"
+	queue_full_file_path=":$queue_full_file_path"
+fi
+
+while read -r url; do
+	if [[ "$url" == "" ]]; then
+		continue
+	fi
+
+	if ! $force_download; then
+		enqueue-data "${queue_name}$queue_full_file_path" "$url"
+	else
+		enqueue-data "${queue_name}$queue_full_file_path" "$url" "--download-archive=$download_index"
+	fi
+done < "$list_file_name"
+
+__queue_identifier="${queue_name}$queue_full_file_path"
+export __queue_identifier
+__download_index="$download_index"
+export __download_index

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+default_target_directory="$HOME/music"
+export default_target_directory
+
+yt_ylp_default_download_index="$HOME/.config/yt-dlp/download-index.txt"
+export yt_ylp_default_download_index
+
+default_queues=(
+"audio_playlist"
+"video"
+"audio+video"
+"audio"
+"audio_bare"
+)
+export default_queues

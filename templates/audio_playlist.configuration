@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# AUDIO-PLAYLIST QUEUE
+#
+# downloads playlists of audio files into an mka container file with thumbnails, subtitles & chapters all embedded
+#
+#
+
+# CONFIGURATION
+__download_with_configuration \
+`# run yt-dlp with these options:…` \
+yt-dlp \
+--live-from-start \
+--windows-filenames \
+--output-na-placeholder "UNKNOWN_PLACEHOLDER_DEBUG_REMOVE" \
+`# show progress` \
+--console-title --progress --newline \
+`# output file template` \
+--parse-metadata "description:(?s)(?P<meta_comment>.+)" \
+--parse-metadata "%(title|)s:%(title_with_separator)s" \
+--replace-in-metadata "title_with_separator" "\s-\s" " – " \
+-o "%(webpage_url_domain.:-4)s/files/%(channel)s%(channel_id& [{}]|)s/%(title_with_separator,title)s%(display_id& [{}]|)s/%(title_with_separator,title|)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+`# quality and file format` \
+--extract-audio \
+--remux mka \
+`# thumbnails` \
+--write-thumbnail \
+--convert-thumbnails png \
+--embed-thumbnail \
+`# subtitles` \
+--sub-lang en \
+--write-auto-subs \
+--write-sub \
+--convert-subs srt \
+--embed-subs \
+`# embed files` \
+--embed-metadata \
+--embed-info-json \
+--embed-chapters \
+`# this is a playlist download, populate playlist fields` \
+--yes-playlist \

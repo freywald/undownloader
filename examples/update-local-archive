@@ -1,0 +1,27 @@
+#!/bin/bash
+clear
+
+file_sources="audio.sources" #a simple link list with the extension ".sources".
+target_directory="files"
+
+if (( ${#@} == 0 )); then
+	echo "HELP"
+	echo
+	echo
+	echo "To download the content from the link list and create a download queue, execute the following command."
+	echo "$ $0 --run"
+	echo
+	echo "If new links were added to the link list, execute the following command, in order to also update the download queue."
+	echo "$ $0 --update"
+	echo
+	echo "To forget which links have been downloaded already and overwrite all existing files with a fresh online copy, execute the following command."
+	echo "The download queue is not updated."
+	echo "$ $0 --force-download --force-overwrites"
+	echo
+	echo "To completely rebuild the archive, execute the following command."
+	echo "The download queue is regenerated and reflects the current state of the link list, in other words: new links are recognized."
+	echo "$ $0 --update --force-download --force-overwrites"
+	exit 1
+fi
+
+undownloader --from-file="$file_sources" --target-directory="$target_directory" "$@"
