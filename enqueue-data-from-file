@@ -7,6 +7,7 @@ fi
 
 source -- "base"
 set_script_path
+
 force_download=false
 create_from_template=false
 

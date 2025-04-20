@@ -1,7 +1,9 @@
 #!/bin/bash
 source -- "base"
 set_script_path
+
 source -- "$__script_path/configuration/defaults"
+
 
 # defaults
 local_run=true
@@ -499,10 +501,10 @@ if [[ -n "$from_file" ]]; then
 
 	link_list_full_file_path="$link_list_name"
 	if [[ "${link_list_name:0:1}" != "/" ]]; then
-		link_list_full_file_path="$(realpath --quiet -- "${__current_directory:?}/$link_list_full_file_path")"
+		link_list_full_file_path="$(realpath --quiet -- "$__current_directory/$link_list_full_file_path")"
 	fi
 
-	link_known_fail_list_full_file_path="$(realpath --quiet -- "${__current_directory:?}/${link_list_name%.*}.failed")"
+	link_known_fail_list_full_file_path="$(realpath --quiet -- "$__current_directory/${link_list_name%.*}.failed")"
 
 	queue_template_full_file_path="$__script_path/templates/$template_name.template"
 	if [[ ! -f "$queue_template_full_file_path" ]]; then

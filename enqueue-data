@@ -8,6 +8,7 @@ fi
 
 source -- "base"
 set_script_path
+
 force=false
 if [[ "$1" == "--force" ]]; then
 	force=true
