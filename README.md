@@ -144,3 +144,4 @@ echo "Installation successful."
 2. Installation successful.
 3. Done.
 4. You're done.
+5. And you're done.
