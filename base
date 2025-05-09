@@ -13,7 +13,7 @@ handle_error() {
 	exit "$1"
 }
 
-trap 'handle_error "$?" "${BASH_COMMAND:-?}" "${FUNCNAME[0]:-main}(${BASH_SOURCE[0]:-?}:${LINENO:-?})"' ERR
+#trap 'handle_error "$?" "${BASH_COMMAND:-?}" "${FUNCNAME[0]:-main}(${BASH_SOURCE[0]:-?}:${LINENO:-?})"' ERR
 
 function array_contains()
 {
@@ -40,9 +40,8 @@ function set_script_path()
 		[[ "$source" != /* ]] && source="$directory/$source" # if $source was a relative symlink, we need to resolve it relative to the path where the symlink file was located
 	done
 
-	__script_path="$(cd -P "$(dirname -- "$source")" > "/dev/null" 2>&1 && pwd)"
+	__script_path="$(cd -P "$(dirname -- "$source")/../" > "/dev/null" 2>&1 && pwd)"
 	cd -- "$former_directory" || exit 1
 
 	export __script_path
 }
-

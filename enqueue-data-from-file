@@ -5,8 +5,8 @@ if (( $# < 2 )); then
 	exit 1
 fi
 
-source -- "base"
-set_script_path
+#source -- "$__script_path/base"
+#set_script_path
 
 force_download=false
 create_from_template=false

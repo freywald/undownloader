@@ -1,0 +1,71 @@
+#!/bin/bash
+
+if (( $# == 0 )); then
+	echo "Usage: $0 <queue name> <data>"
+	echo "Usage: $0 <queue template name>:<queue file location> <download URL>"
+	exit 1
+fi
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/base"
+set_script_path
+
+force=false
+if [[ "$1" == "--force" ]]; then
+	force=true
+	shift
+fi
+
+template_name="${1%:*}"
+queue_full_file_path="${1#*:}"
+if [[ "$queue_full_file_path" == "$template_name" ]]; then
+	queue_file="$__script_path/var/queues/$template_name.queue"
+else
+	queue_file="$queue_full_file_path"
+fi
+
+queue_name="$template_name"
+shift
+
+lines=()
+
+if [[ -z "${1:-}" ]]; then
+	previous_line=""
+	echo "No data provided, entering INPUT MODE, use linebreak to exit"
+	while true; do
+		read -r line
+		lines+=("$line")
+		previous_line=$line
+		if [[ "${previous_line}${line}" == "" ]]; then
+			break
+		fi
+	done
+else
+	lines+=("$*")
+	shift
+fi
+
+for line in "${lines[@]}"; do
+	if [[ -n "$line" ]]; then
+
+		parameters=()
+		for parameter in $line; do
+			parameters+=( "\"$parameter\"" )
+		done
+
+		item_count=${#parameters[@]}
+
+		if ! $force; then
+			line="${parameters[*]}"
+		else
+			current_date="$(date +%Y%m%d%H%M%S)"
+			line="${parameters[*]} --download-archive=$__script_path/var/archive/queue-$queue_name-date-$current_date.index"
+			((item_count++))
+		fi
+
+		line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items
+
+		line="$(echo "$line" | sed "s/\//\\\\\//g")"
+
+		sed -i "/^+ \\\/{s//\+ \\\\\n$line\\\/;:p;n;bp}" "$queue_file" && echo "The data item '${parameters[0]}' was appended to the processing queue '$queue_name'."
+    fi
+done

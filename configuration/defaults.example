@@ -11,6 +11,7 @@ default_queues=(
 "video"
 "audio+video"
 "audio"
+"audio_simple"
 "audio_bare"
 )
 export default_queues

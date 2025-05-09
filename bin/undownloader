@@ -1,9 +1,7 @@
 #!/bin/bash
-source -- "base"
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/base"
 set_script_path
-
-source -- "$__script_path/configuration/defaults"
-
 
 # defaults
 local_run=true
@@ -17,9 +15,12 @@ scrape_comments=false
 regenerate_queue=false
 target_directory=""
 from_file=""
-base_directory="${default_target_directory:?}"
 default_queues=()
 link_known_fail_list_full_file_path=""
+
+source -- "$__script_path/configuration/defaults"
+
+base_directory="${default_target_directory:?}"
 
 mkdir --parents -- "$__script_path/var/archive/"
 mkdir --parents -- "$__script_path/var/template-instances/"
@@ -153,6 +154,7 @@ fi
 
 if $local_run; then
 	file="$(ls -- ./*".sources" 2> "/dev/null")" || file="" # take the first sources file
+
 	if [[ "$file" != "" ]]; then
 		template_base_name="$(basename -- "${file%.*}")" # the base file name specifies also the name of the download template
 		from_file="$template_base_name:$file"
