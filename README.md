@@ -133,7 +133,7 @@ yt-dlp
 
 1. Please execute the following shell command in your shell.
 ```bash
-path="$HOME/bin/applications/undownloader" && \
+path="$HOME/applications/undownloader" && \
 mkdir --parents -- "$path" && \
 git clone -- git@github.com:freywald/undownloader.git "$path" && \
 cd -- "$path" && \

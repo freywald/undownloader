@@ -42,3 +42,7 @@ yt-dlp \
 --embed-metadata \
 --embed-info-json \
 --embed-chapters \
+--write-description \
+--write-info-json \
+--write-playlist-metafiles \
+--write-comments \
