@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source -- "$__script_path/templates/audio.template"
+source -- "$__script_path/templates/audio.configuration"
 
 __download_urls \
 + \
