@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# AUDIO-PLAYLIST QUEUE
+#
+# downloads playlists of audio files into an mka container file with thumbnails, subtitles & chapters all embedded
+#
+#
+
+# CONFIGURATION
+__configure_download \
+`# run yt-dlp with these options:…` \
+yt-dlp \
+--live-from-start \
+--compat-options no-clean-infojson \
+--output-na-placeholder "UNKNOWN_PLACEHOLDER" \
+`# show progress` \
+--console-title --progress --newline \
+`# output file template` \
+--parse-metadata "description:(?s)(?P<meta_comment>.+)" \
+--replace-in-metadata "title" "[＂\"]+" "_" \
+--parse-metadata "%(title|)s:%(title_with_separator)s" \
+--replace-in-metadata "title_with_separator" "\s-\s" " – " \
+--replace-in-metadata "title_with_separator" ":" "_" \
+--parse-metadata "%(playlist_index|)s:%(playlist_index_3d)s" \
+--parse-metadata "playlist_index_3d:%(playlist_index_3d)03d" \
+-o "%(webpage_url_domain)s/audio/%(uploader,uploader_id&{} – |)s%(playlist_title)s%(playlist_id& [{}]|)s/%(playlist_index_3d|)s%(display_id& [{}]|)s/%(playlist_index_3d&{} – |)s%(title_with_separator,title)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/audio/%(uploader,uploader_id&{} – |)s%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/audio/%(uploader,uploader_id&{} – |)s%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/audio/%(uploader,uploader_id&{} – |)s%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/audio/%(uploader,uploader_id&{} – |)s%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+`# quality and file format` \
+--extract-audio \
+--remux mka \
+`# thumbnails` \
+--write-thumbnail \
+--convert-thumbnails png \
+--embed-thumbnail \
+`# subtitles` \
+--sub-lang "en.*" \
+--write-auto-subs \
+--write-sub \
+--convert-subs srt \
+--embed-subs \
+`# embed files` \
+--embed-metadata \
+--embed-info-json \
+--embed-chapters \
+`# this is a playlist download, populate playlist fields` \
+--yes-playlist \

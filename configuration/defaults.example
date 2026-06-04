@@ -1,17 +1,28 @@
 #!/bin/bash
 
-default_target_directory="$HOME/music"
+default_target_directory="$HOME/var/undownloader/files/"
 export default_target_directory
 
 yt_ylp_default_download_index="$HOME/.config/yt-dlp/download-index.txt"
 export yt_ylp_default_download_index
+
+default_template_name="audio"
+export default_template_name
 
 default_queues=(
 "audio_playlist"
 "video"
 "audio+video"
 "audio"
-"audio_simple"
-"audio_bare"
 )
 export default_queues
+
+# install
+
+application_var_directory="/home/$USER/Daten1/var/undownloader/application"
+export application_var_directory
+
+base_configuration=("-4" "--no-overwrites" "--no-playlist")
+export base_configuration
+
+default_view_name="full"

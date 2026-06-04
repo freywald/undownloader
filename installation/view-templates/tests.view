@@ -1,0 +1,146 @@
+#!/bin/bash
+
+archive_on_update=false
+
+formatters=(
+
+	#"{{a:'2007%14d'=2007//1//2:b|id}}/{{file_extension}}"
+	#"{{a:'2007%14d'=^2007$//1//2:b|id}}/{{file_extension}}"
+	#"{{a:'2007%14d'==2007//1//2:b|id}}/{{file_extension}}"
+
+	#"{{release_year|z:'2007'%22d:z|id}}/{{release_year|z:release_year=2007%22d:z|id}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{release_year|z:release_year=2007?%22d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:release_year=2007//////?%22d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{timestamp=1376207604//%21d////%14d|'invalid'}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{timestamp=1376207604//%21d////%14d?|'invalid'}}/{{file_extension}}"
+	#"{{release_year=1376207604//11////%14d?|'invalid'}}/{{file_extension}}"
+	#"{{timestamp=null//////%14d|'invalid'}}/{{file_extension}}"
+
+
+	#"{{timestamp?##failure|'invalid'}}/{{file_extension}}"
+	#"{{timestamp##failure|'invalid'}}/{{file_extension}}"
+
+	#"{{timestamp=?##failure|'invalid'}}/{{file_extension}}"
+	#"{{timestamp=##failure|'invalid'}}/{{file_extension}}"
+
+	#"{{timestamp=null?##failure|'invalid'}}/{{file_extension}}"
+	#"{{timestamp=1376207604##failure|'invalid'}}/{{file_extension}}"
+
+	#"{{timestamp=null//////?##failure|'invalid'}}/{{file_extension}}"
+	#"{{timestamp=null//////##failure|'invalid'}}/{{file_extension}}"
+
+	#"{{timestamp=null//////%10d?##failure|'invalid'}}/{{file_extension}}"
+	#"{{timestamp=1376207604##failure|'invalid'}}/{{file_extension}}"
+
+	#"{{timestamp=null////%21d//%14d}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+
+
+	#"{{z:playlist_index=5//200%24d//660%12d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=1000//200%24d//660%12d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=5//%6d//660%6d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=1000//%6d//660%6d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=5//200%6d//%6d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=1000//200%6d//%6d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=5//%15d//%2d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+	#"{{z:playlist_index=1000//%15d//%2d:z}}/{{playlist_index?%03d}} - {{title|fulltitle}} [{{id}}].{{file_extension}}"
+
+	# TEST CASES
+	#"{{+:release_year=:+|'invalid'}}/{{file_extension}}" # give me raw value, it's json null, accept it always as opt is active, as string "null"
+	#"{{+:release_year=?:+|'invalid'}}/{{file_extension}}"  #'' give me raw value, it's json null, accept it always as opt is active and explicitly set opt through "?", same as without, output is string "null"
+	#"{{+:release_year=//a:+|'invalid'}}/{{file_extension}}" # give me raw value, but opt is not active and ="" means also match to empty string "^$" without opt and only if-true choice 'a', invalid is taken
+	#"{{+:release_year=//a//b:+|'invalid'}}/{{file_extension}}" # give me raw value, but opt is not active and ="" means also match to empty string "^$" without opt but if-false choice 'b' available, 'b'
+	#"{{+:release_year=//a//b?:+|'invalid'}}/{{file_extension}}" # gives b, ? becomes not active, because path is available as it's given explicitly "b"
+	#"{{+:release_year=////NOT-TRUE:+|'invalid'}}/{{file_extension}}" # gives b, ? becomes not active, because path is available as it's given explicitly "b"
+	#"{{+:description=////NOT-TRUE:+|'invalid'}}/{{file_extension}}" # gives '' empty string, description
+	#"{{+:description=//x//NOT-TRUE:+|'invalid'}}/{{file_extension}}" # gives 'x'
+	#"{{+:description=:+|'invalid'}}/{{file_extension}}" # gives ''
+
+	#"{{+:release_year:+|'invalid'}}/{{file_extension}}" # release year is missing, next pattern 'invalid' is taken
+	#"{{+:release_year=null:+|'invalid'}}/{{file_extension}}" # tests for null json value
+	#"{{+:description=:+|'invalid'}}/{{file_extension}}" # tests for empty string ('') json value
+	#"{{+:description='':+|'invalid'}}/{{file_extension}}" # tests for non-empty string '' in json value, next pattern 'invalid' is taken
+	#"{{+:release_year=\"\":+|'invalid'}}/{{file_extension}}" # tests for non-empty string "" in json value, next pattern 'invalid' is taken
+	#"{{+:release_year?:+|'invalid'}}/{{file_extension}}" # if release_year is null or  non-null, partial pattern "release_year" is accepted
+
+	#"{{+:release_year=null:+|'invalid'}}/{{file_extension}}"  # null
+	#"{{+:release_year=null111:+|'invalid'}}/{{file_extension}}"  # invalid
+	#"{{+:release_year=null?:+|'invalid'}}/{{file_extension}}"  # null, ? means accept pattern also if comparison fails
+	#"{{+:release_year=null111?:+|'invalid'}}/{{file_extension}}"  # null, ? means accept pattern also if comparison fails
+
+	#"{{+:description:+|'invalid'}}/{{file_extension}}" # invalid, empty string is not allowed
+	#"{{+:description?:+|'invalid'}}/{{file_extension}}" # okay, empty string is allowed
+	#"{{+:release_year:+|'invalid'}}/{{file_extension}}" # invalid, null is not allowed
+	#"{{+:release_year?:+|'invalid'}}/{{file_extension}}" # # okay, null is allowed
+
+	#"{{+:description=''//a//b:+|'invalid'}}/{{file_extension}}" # empty string "", not "''"
+	#"{{+:description=z//a//b:+|'invalid'}}/{{file_extension}}" # empty string "", not "z'"
+
+	#"{{+:description=//a//b:+|'invalid'}}/{{file_extension}}" # a, description is empty string ", take a
+	#"{{+:release_year=//a//b:+|'invalid'}}/{{file_extension}}" # a, release_year is json null, compare it with empty string, SHOULD BE ""b"
+
+	#"{{+:release_year=null//a//b:+|'invalid'}}/{{file_extension}}" # ohne ? auch a, ? egal
+	#"{{+:release_year=null1//a//b:+|'invalid'}}/{{file_extension}}" # ohne ? auch b, ? egal
+	#"{{+:release_year=null//a//b?:+|'invalid'}}/{{file_extension}}" #a
+	#"{{+:release_year=null1//a//b?:+|'invalid'}}/{{file_extension}}" #b
+	#"{{+:release_year=null1//a?:+|'invalid'}}/{{file_extension}}" # null
+	#"{{+:release_year=null1//a:+|'invalid'}}/{{file_extension}}" # invalid
+	# TEST CASES END
+
+
+
+    # 1. YouTube only
+   # "{{webpage_url_domain=^youtube\.}}/{{channel|uploader}}/{{playlist|'Unknown_Playlist'}} {{release_year|z:'2007'%06d:z}}/{{playlist_index?%03d}} - {{title}} [{{id}}].{{file_extension}}"
+
+    # 2. General fallback
+	#"{{channel|uploader}}/{{playlist|'Unknown_Playlist'}}/{{playlist_index?%03d}} - {{title}} [{{id}}].{{file_extension}}"
+
+    # 3. Ultimate safe
+   # "{{webpage_url_domain}}/NA/{{id}}/{{id}}.{{file_extension}}"
+
+
+  # "PLAYLIST/{{channel|uploader_id|uploader}}/{{playlist_title|playlist|'Unknown Playlist'}}{{( :release_year:)|( :release_date:)|?}}/{{playlist_index%03d}}. {{title}}{{ (u:upload_date?:)}} [{{id}}].{{file_extension}}" #@TODO both should behave the same
+   # "PLAYLIST/{{channel|uploader_id|uploader}}/{{playlist_title|playlist|'Unknown Playlist'}}{{( :release_year:)|( :release_date:)|''?}}/{{playlist_index%03d}}. {{title}}{{ (u:upload_date?:)}} [{{id}}].{{file_extension}}" #@TODO both should behave the same
+	#"PLAYLIST/{{channel|uploader_id|uploader}}/{{playlist_title|playlist|'Unknown Playlist'}}{{( :release_year:)|( :release_date:)|'X'?}}/{{playlist_index%03d}}. {{title}}{{ (u:upload_date?:)}} [{{id}}].{{file_extension}}" #@TODO both should behave the same
+
+
+    #"{{:playlist_index?:}}[{{id}}].{{file_extension}}"
+        #"{{channel|uploader_id|uploader}}/{{artist|composer|album_artist}}{{ (:upload_date?:)}}/{{:playlist_index?: }}{{title}} [{{id}}].{{file_extension}}"
+        #"album/{{channel|uploader_id|uploader}}/{{album}}/{{title}} [{{id}}].{{file_extension}}"
+        #"playlist/{{channel|uploader_id|uploader}}/{{playlist_title}}/{{:playlist_index?: }}{{title}} [{{id}}].{{file_extension}}"
+        #"title/{{channel|uploader_id|uploader}}/{{title}} [{{id}}].{{file_extension}}"
+        # 1. album
+
+        #"@{{channel|uploader_id|uploader}}/a{{artist}}/{{title}}{{ (:upload_date?:)}} [{{id}}]/{{title}}.{{file_extension}}"
+        #"@{{channel|uploader_id|uploader}}/c{{composer}}/{{title}}{{ (:upload_date?:)}} [{{id}}]/{{title}}.{{file_extension}}"
+        #"@{{channel|uploader_id|uploader}}/aa{{album_artist}}/{{title}}{{ (:upload_date?:)}} [{{id}}]/{{title}}.{{file_extension}}"
+        # 2. Fallback: Simpler path if no channel/uploader ID exists
+        #"@{{channel|uploader_id|uploader}}/{{title}}{{ (:upload_date?:)}} [{{id}}]/{{title}}.{{file_extension}}"
+)
+
+#formatters=("{{a:release_year?:b}}[{{id}}].{{file_extension}}")
+#release_year is null
+
+field_format__timestamp() {
+    local input="$1"
+
+    [[ -z "$input" ]] && { echo ""; return; }
+
+    local date_str=""
+
+    if [[ "$input" =~ ^[0-9]{1,10}$ ]]; then
+        date_str="@$input"
+    # Case 3: Already ISO-like or other formats - pass through to date
+    else
+        date_str="$input"
+    fi
+
+    # Convert to desired format
+    date -d "$date_str" '+%d.%m.%Y' 2>"/dev/null" || echo "$input"
+}
+
+formatter__failure(){
+	local input="$1"
+
+    [[ -z "$input" ]] && { echo ""; return; }
+    echo "***${input}***"
+}

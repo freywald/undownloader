@@ -7,7 +7,8 @@ if (( $# == 0 )); then
 fi
 
 source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/base"
-set_script_path
+__set_script_path
+source -- "$__script_path/configuration/defaults"
 
 force=false
 if [[ "$1" == "--force" ]]; then

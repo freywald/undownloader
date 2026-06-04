@@ -1,0 +1,9 @@
+#!/bin/bash
+
+library_path="$(realpath "$(dirname -- "${BASH_SOURCE[0]}")/")/"
+if [[ -f "$library_path/FORCE_EXTERNAL_LIBRARY" ]] || [[ -L "$library_path/external_common-library" && -e "$library_path/external_common-library" ]]; then
+	source -- "$library_path/external_common-library" || exit 1
+else
+	source -- "$library_path/common-library.v2" || exit 1
+fi
+

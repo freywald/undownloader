@@ -1,0 +1,158 @@
+#!/bin/bash
+
+if (( $# == 0 )); then
+	echo "Usage: $0 <queue name> <download data+URL>"
+	echo "Usage: $0 <queue template name>:<queue file location> <download data+URL>"
+	exit 1
+fi
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base" || exit 1
+__set_script_path
+__enable_error_handler
+function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+source -- "$__script_path/library/main" || exit 1
+source -- "$__script_path/configuration/defaults" || exit 1
+
+force=false
+if [[ "$1" == "--force" ]]; then
+	force=true
+	shift ||__expression_may_fail
+fi
+
+if [[ -z "$1" ]]; then
+	__error "queue file not given"
+	__exit_failsafe
+fi
+
+template_name="${1%:*}"
+queue_full_file_path="${1#*:}"
+
+if [[ "$queue_full_file_path" == "$template_name" ]]; then
+	queue_file="$application_var_directory/queues/$template_name.queue"
+else
+	queue_file="$queue_full_file_path"
+	# @fixme verify if given $1 = "axudio:/home/ju/Daten1/var/undownloader/application/queues/foobar_music.queue"
+	# that $template_name axudio is the correct template name for the queue (which it is not, the string is erroneously accepted)
+fi
+
+if [[ ! -f "$queue_file" ]]; then
+	__error "queue file '%s' does not exist" "$queue_file"
+	__exit_failsafe
+fi
+
+queue_name="$queue_full_file_path"
+shift ||__expression_may_fail
+
+function handle_line() {
+	local parameters=()
+
+	#echo "1=${1:-?}"
+	#echo "2=${2:-?}"
+	#echo "3=${3:-?}"
+	#echo "4=${4:-?}"
+
+	#read -ra parameter_input_array <<< "$@"
+	#for parameter in "${parameter_input_array[@]}"; do
+
+	for parameter in "$@"; do
+		parameters+=( "\"$parameter\"" )
+	done
+
+	line="$1"
+    local separator=" --"$'\t'
+    local escaped_separator=" --\\"$'\t'
+    line="${line//"$escaped_separator"/"$separator"}" #unescape input
+
+    local arguments="${line%%"$separator"*}"
+    local parameter_url="${line#*"$separator"}"
+
+	if [[ "$parameter_url" =~ ^(https?://)?(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
+		__info "try to get a playlist url for youtube %s" "$parameter_url"
+
+		local new_video_url
+		if new_video_url=$(handle_youtube_url "$parameter_url"); then
+			if [[ -n "$new_video_url" ]]; then
+				parameters+=( "\"--metadata-source-url=\\\"$parameter_url\\\"\"" )
+				parameter_url="$new_video_url"
+				__info "new video url: %s" "$new_video_url"
+			fi
+		else
+			__error "video %s could not connect" "$parameter_url"
+			local_exit_failsafe
+		fi
+	else
+		__info "not a youtube link %s" "$parameter_url"
+	fi
+
+    if [[ "$parameter_url" != "$arguments" ]]; then
+		parameters[0]="\"$parameter_url\""
+	else
+		arguments=""
+	fi
+
+	for arguments in $arguments; do
+		parameters+=( "\"$arguments\"" )
+	done
+
+	item_count="${#parameters[@]}"
+
+	if ! $force; then
+		line="${parameters[*]}"
+	else
+		line="${parameters[*]} \"--download-archive=archive/$__current_date.memory\""
+		((item_count++))||__expression_may_fail
+	fi
+
+	line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items
+
+	# source: https://blog.stigok.com/2018/05/31/surprising-sed-replace-uri-with-ampersand.html
+	# escape certain characters
+	line=$(sed 's/[&/\]/\\&/g' <<< "$line")
+
+	# source: https://unix.stackexchange.com/questions/188264/how-do-i-substitute-only-first-occurence-with-sed
+	# insert download data below top-most "+ \" insertion marker, but none other if existing
+	sedex="/^+ \\\/{s//+ \\\\\n$line\\\/;:p;n;bp}"
+
+	sed -i "$sedex" "$queue_file" && echo "The url '${parameters[0]}' is appended to queue '$queue_name'."
+
+	# link-muddler-delete-link "${parameters[0]}" #@fixme
+}
+
+if [[ -z "${1:-}" ]]; then
+	previous_line="?"
+	echo "No data provided, entering INPUT MODE, use linebreak to exit"
+
+	while true; do
+		read -r line
+		mapfile -t lines < <(xargs -n1 printf '%s\n' <<< "$(__trim_string_balanced "$line" \")")
+		set -- "${lines[@]}"
+
+	#echo "1=${1:-?}"
+	#echo "2=${2:-?}"
+	#echo "3=${3:-?}"
+	#echo "4=${4:-?}"
+	#echo "l=$# a=$*"
+
+		if (( $# > 0 )) && [[ $1 != "" ]]; then
+			handle_line "$@"
+		else
+			line=""
+		fi
+
+		if [[ "${previous_line}${line}" == "" ]]; then #both are empty
+			break
+		fi
+
+		previous_line="$line"
+	done
+else
+	#echo "1=${1:-?}"
+	#echo "2=${2:-?}"
+	#echo "3=${3:-?}"
+	#echo "4=${4:-?}"
+	#echo "l=$# a=$*"
+
+	handle_line "$@"
+fi
+

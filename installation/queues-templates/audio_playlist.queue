@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source -- "$__script_path/templates/audio_playlist.configuration"
+source -- "$__script_path/templates/audio_playlist.configuration" || exit 1
 
 __download_urls \
 + \

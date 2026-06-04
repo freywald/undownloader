@@ -1,0 +1,981 @@
+#!/bin/bash
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base" || exit 1
+__set_script_path
+__enable_error_handler
+function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+source -- "$__script_path/library/main" || exit 1
+source -- "$__script_path/configuration/defaults" || exit 1
+source -- "$__script_path/configuration/view.defaults" || exit 1
+
+directory=""
+input_sources_name=""
+input_view_name=""
+update_all_views=false
+
+#__quiet=true
+#__debug=true
+
+for file in "$@"; do
+	if [[ "$file" == "--" ]]; then
+		continue
+	fi
+	if [[ "$file" =~ ^--view ]]; then
+    	#ignore currently it is just there for $run_view to make "undownloader --view" easy
+    	shift ||__expression_may_fail
+    	continue
+    elif [[ "$file" =~ ^--update-all ]]; then
+		update_all_views=true
+		shift ||__expression_may_fail
+		continue
+	elif [[ "$file" =~ ^--.* ]]; then
+		__error "input error %s" "$file"
+		local_exit_failsafe
+	fi
+	file_extension="${file##*.}"
+
+	if [[ "$file_extension" == "sources" ]]; then
+		input_sources_name="$1"
+		shift ||__expression_may_fail
+	elif [[ "$file_extension" == "view" ]]; then
+		input_view_name="$1"
+		shift ||__expression_may_fail
+	elif [[ -z "$input_view_name" ]]; then
+		input_view_name="$1"
+		shift ||__expression_may_fail
+	else
+		__error "input error %s" "$@"
+		local_exit_failsafe
+	fi
+done
+
+__template_name=""
+__regular_expression_configuration_matches=""
+archive_on_update=true
+formatters=("file.{{file_extension}}")
+
+detect_filesystem() {
+	local path="$1"
+
+	if [[ -n "${force_target_filesystem_is_linux-}" ]]; then
+		target_filesystem_is_linux="$force_target_filesystem_is_linux"
+		__info "Manual override: target_filesystem_is_linux=%s" "$target_filesystem_is_linux"
+		return
+	fi
+
+	target_filesystem_is_linux=true
+	if [[ -z "$path" || ! -d "$path" ]]; then
+		return
+	fi
+
+	local filesystem_type
+	filesystem_type="$(stat -f -c "%T" "$path" 2>"/dev/null" || echo "unknown")"
+
+	case "$filesystem_type" in
+		ntfs|exfat|vfat|fat|msdos|cifs|smb|smbfs|9p|drvfs)
+			target_filesystem_is_linux=false
+			__debug "Detected Windows filesystem (%s) → using Windows-safe sanitization" "$filesystem_type"
+			;;
+		*)
+			#ext4, xfs, btrfs, zfs, etc.
+			target_filesystem_is_linux=true
+			__debug "Detected Linux filesystem (%s)" "$filesystem_type"
+			;;
+	esac
+}
+
+print_metadata_table() {
+	local json_file="$1"
+
+	if [[ ! -f "$json_file" ]]; then
+		__warn "JSON file %s not found" "$json_file"
+		return 1
+	fi
+
+	printf "%-28s %-55s %s\n" "FIELD_NAME" "DATA" "STATUS"
+	printf "%-28s %-55s %s\n" "----------------------------" "-------------------------------------------------------" "--------"
+
+	local field value status display_value
+
+	for field in "${json_fields[@]}"; do
+		value="$(get_json_field "$json_file" "$field")"
+
+		if [[ -z "$value" ]]; then
+			# Check raw value to distinguish between missing and null/empty
+			local raw
+			raw=$(jq -r --arg f "$field" '.[$f] // "MISSING"' "$json_file" 2> "/dev/null")
+
+			if [[ "$raw" == "MISSING" ]]; then
+				status="missing"
+				display_value="$(echo "(missing)")"
+			elif [[ "$raw" == "null" ]]; then
+				status="null"
+				display_value="$(echo "(null)")"
+			else
+				status="empty"
+				display_value="$(echo "(empty)")"
+			fi
+		else
+			status="present"
+			display_value="$value"
+
+			# Truncate very long values for better table display
+			if (( ${#display_value} > 52 )); then
+				display_value="${display_value:0:49} … "
+			fi
+		fi
+
+		printf "%-28s %-55s %s\n" "$field" "$display_value" "$status"
+	done
+}
+
+sanitize() {
+	local input="$1"
+
+	if [[ "$(type -t "view_sanitize")" == "function" ]]; then
+		view_sanitize "$input"
+		return
+	fi
+
+	if $target_filesystem_is_linux; then  # Linux only: remove truly illegal characters
+		echo "$input" | tr -d '/\0'
+	else
+		echo "$input" | tr -d '\\/:*?"<>|' # Windows compatibility
+	fi
+}
+
+get_json_field_raw() {
+	local json_file="$1"
+	local field="$2"
+
+    if [[ $(jq -r --arg f "$field" 'has($f)' "$json_file") != "true" ]]; then
+        return 1
+    fi
+
+	jq -r --arg f "$field" '
+		.[$f] |
+		if . == null then
+			"null"
+		else
+			tostring |
+			gsub("^\\p{Zs}+|\\p{Zs}+$"; "") |
+			select(. != "")
+		end
+	' "$json_file" 2>"/dev/null" || echo ""
+	return 0
+}
+
+get_json_field() {
+	local json_file="$1"
+	local field="$2"
+
+	jq -r --arg f "$field" '
+		.[$f] |
+		if . == null then
+			""
+		else
+			tostring |
+			gsub("^\\p{Zs}+|\\p{Zs}+$"; "") |
+			select(. != "")
+		end
+	' "$json_file" 2>"/dev/null" || echo ""
+}
+
+resolve_field() {
+	local json_file="$1"
+	local field="$2"
+	local raw="${3:-false}"
+
+	local value
+	#if [[ "$field" =~ ^[\'](.+)[\']$ ]]; then
+	if [[ "$field" =~ ^[\']([^\']*)[\']$ ]]; then
+		echo "${BASH_REMATCH[1]}"
+		return 0
+	else
+		if $raw; then
+			value="$(get_json_field_raw "$json_file" "$field")"
+		else
+			value="$(get_json_field "$json_file" "$field")"
+		fi
+		if [[ -n "$value" ]]; then
+			echo "$value"
+			return 0
+		fi
+	fi
+
+	echo ""
+}
+
+test_pattern() {
+	local pattern="$1"
+
+	IFS='|' read -ra pattern_alternatives <<< "$pattern"
+
+	local pattern_alternative
+	for pattern_alternative in "${pattern_alternatives[@]}"; do
+
+		local is_optional=false prefix="" field_spec="" postfix="" printf_fmt="" condition_field="" condition_regex="" condition_negate=false condition_use_equality=false hashhash_function=""
+		parse_field_formatter "$pattern_alternative" is_optional prefix field_spec postfix printf_fmt condition_field condition_regex condition_negate condition_use_equality hashhash_function
+
+		#if [[ "$field_spec" =~ ^[\'](.+)[\']$ ]]; then
+		if [[ "$field_spec" =~ ^[\']([^\']*)[\']$ ]]; then
+			:
+		elif ! __array_contains "$field_spec" "${json_fields[@]}"; then
+			invalid+=("$field_spec")
+		fi
+
+		# Remove this placeholder for next iteration
+		target_path="${target_path//"$full_placeholder"/""}"
+		break
+	done
+}
+
+resolve_pattern() {
+	local pattern="$1"
+	local json_file="$2"
+
+	IFS='|' read -ra pattern_alternatives <<< "$pattern"
+
+	__debug "pattern: $pattern"
+
+	local pattern_alternative
+	for pattern_alternative in "${pattern_alternatives[@]}"; do
+		is_literal=false
+		raw=false
+		condition_value_if_true=""
+		condition_value_if_false=""
+		condition_always=""
+		printf_fmt_always=""
+		field_value_always=""
+		printf_fmt_condition=""
+
+		__debug "partial pattern: $pattern_alternative"
+		local is_optional=false prefix="" field_spec="" postfix="" printf_fmt="" condition_field="" condition_regex="" condition_negate=false condition_use_equality=false hashhash_function=""
+		parse_field_formatter "$pattern_alternative" is_optional prefix field_spec postfix printf_fmt condition_field condition_regex condition_negate condition_use_equality hashhash_function
+
+		if [[ -n "$condition_field" ]]; then
+			local field_value
+			field_value="$(resolve_field "$json_file" "$condition_field" true)"
+
+			if [[ -z "$condition_regex" ]]; then # special case "field=" without a value will accept any value and output it (raw)
+				condition_regex="^$"
+				is_optional=true
+				__debug "is_opt0"
+				# actually uses $condition_value_if_false but it's empty
+			fi
+
+			# Parse condition true/false syntax
+			if [[ "$condition_regex" =~ ^([^//]*)//([^//]*)//([^//]*)$ ]]; then
+			#if [[ "$condition_regex" =~ ^([^//]*)//([^//]+)//([^//]*)$ ]]; then
+				condition_regex="${BASH_REMATCH[1]}"
+				condition_value_if_true="${BASH_REMATCH[2]}"
+				condition_value_if_false="${BASH_REMATCH[3]}"
+				__debug "conditions: $condition_regex | $condition_value_if_true | $condition_value_if_false"
+
+				if [[ -n "$condition_value_if_false" ]]; then
+					is_optional=true
+					__debug "is_opt1"
+				fi
+			elif [[ "$condition_regex" =~ ^([^//]*)//([^//]+)$ ]]; then
+				condition_regex="${BASH_REMATCH[1]}"
+				condition_value_if_true="${BASH_REMATCH[2]}"
+				__debug "conditions: $condition_regex | $condition_value_if_true "
+			elif [[ "$condition_regex" =~ ^([^//]*)//([^//]*)//([^//]*)//([^//]*)$ ]]; then
+				condition_regex="${BASH_REMATCH[1]}"
+				condition_value_if_true="${BASH_REMATCH[2]}"
+				condition_value_if_false="${BASH_REMATCH[3]}"
+				condition_always="${BASH_REMATCH[4]}"
+				__debug "conditions: $condition_regex | $condition_value_if_true | $condition_value_if_false | * $condition_always"
+
+				if [[ -n "$condition_value_if_false" ]]; then
+					is_optional=true
+					__debug "is_opt2"
+				fi
+
+				if [[ -n "$condition_always" ]]; then
+					if [[ "$condition_always" =~ ^(.+)[?]?[%]([0-9]+)?d$ ]]; then
+						local base_field="${BASH_REMATCH[1]}"
+						local width="${BASH_REMATCH[2]:-0}"
+						field_value_always="$base_field"
+						printf_fmt_always="%0${width}d"
+					elif [[ "$condition_always" =~ ^(.+)?[?]?[%]([0-9]+)?d$ ]]; then
+						local base_field="${BASH_REMATCH[1]}"
+						local width="${BASH_REMATCH[2]:-0}"
+						field_value1="$base_field"
+						printf_fmt_always="%0${width}d"
+						if [[ -n "$field_value1" ]]; then
+							field_value_always="$field_value1"
+						fi
+					else
+						field_value_always="$condition_always"
+					fi
+
+					if [[ -n "$field_value_always" ]]; then
+						is_optional=true
+						__debug "is_opt3"
+					fi
+					__debug "$field_value_always fmt. $printf_fmt_always"
+				fi
+			fi
+
+			if [[ -z "$condition_regex" ]]; then
+            	condition_regex="^$"
+            fi
+			if $condition_use_equality; then
+            	condition_regex="^$field_value$"
+            fi
+
+            if [[ "$field_value" =~ ^(.+)[?]?[%]([0-9]+)?d$ ]]; then
+            				local base_field="${BASH_REMATCH[1]}"
+            				local width="${BASH_REMATCH[2]:-0}"
+            				field_value="$base_field"
+            				printf_fmt="%0${width}d"
+            				__debug "rrrrrrrrrrrr $field_value"
+  							field_value="$((10#$field_value))"
+							if (  $is_optional ) && [[ -z "$field_value" ]]; then
+									field_value="0"
+							fi
+  							field_value=$(printf "$printf_fmt" "$field_value")
+  							__debug "rrrrrrrrrrrr $field_value"
+  							printf_fmt=""
+            			elif [[ "$field_value" =~ ^(.+)?[?]?[%]([0-9]+)?d$ ]]; then
+            				local base_field="${BASH_REMATCH[1]}"
+            				local width="${BASH_REMATCH[2]:-0}"
+            				field_value="$base_field"
+            				printf_fmt="%0${width}d"
+
+            				#if [[ -z "$field_value" ]]; then #@ TODO KEEP THIS
+            				#	field_value="0"
+            				#fi
+
+							if (  $is_optional ) && [[ -z "$field_value" ]]; then
+									field_value="0"
+							fi
+
+            				__debug "iiiiiiiiiiii $field_value"
+  							field_value="$((10#$field_value))"
+  							field_value=$(printf "$printf_fmt" "$field_value")
+  							__debug "iiiiiiiiiiii $field_value"
+  							printf_fmt=""
+            			fi
+
+			if [[ "$condition_negate" == true ]]; then
+				__debug "    *${field_value}* !1=    *${condition_regex}*"
+				 if [[ "$field_value" =~ $condition_regex ]]; then
+				 	if ! $is_optional; then
+				 		failed=1
+						continue
+					fi
+					condition_value_if_true="$condition_value_if_false"
+				fi
+			else
+				__debug "1z                              *$field_value"
+				__debug "    *${field_value}* =2=    *${condition_regex}*"
+				__debug ""$field_value" =~ $condition_regex"
+				if [[ ! "$field_value" =~ $condition_regex ]]; then
+
+				 	if ! $is_optional; then
+				 		failed=1
+						continue
+					fi
+					condition_value_if_true="$condition_value_if_false"
+				 fi
+				 __debug "1z                              *$field_spec"
+			fi
+			raw=true
+		fi
+
+		#if [[ "$field_spec" == "file_extension" ]]; then
+		#	value="$ext"
+		#elif [[ -n "$condition_value_if_true" ]]; then
+		##############################################echo "**COND:$condition_value_if_true"
+		if [[ -n "$condition_value_if_true" ]]; then
+			# Handle printf formatting (e.g. 03d, 04d)
+			if [[ "$condition_value_if_true" =~ ^(.+)[?]?[%]([0-9]+)?d$ ]]; then
+				local base_field="${BASH_REMATCH[1]}"
+				local width="${BASH_REMATCH[2]:-0}"
+				value="$base_field"
+				printf_fmt_condition="%0${width}d"
+				__debug "22222222222222222 $condition_value_if_true"
+			elif [[ "$condition_value_if_true" =~ ^(.+)?[?]?[%]([0-9]+)?d$ ]]; then
+				local base_field="${BASH_REMATCH[1]}"
+				local width="${BASH_REMATCH[2]:-0}"
+				value="$base_field"
+				printf_fmt_condition="%0${width}d"
+				if [[ -z "$value" ]]; then
+					value="$(resolve_field "$json_file" "$field_spec" "$raw")"
+				fi
+				__debug "111111111111111111111 $condition_value_if_true"
+			else
+				value="$condition_value_if_true"
+			fi
+			__debug "VALUE========$value zz $printf_fmt_condition"
+		else
+			#echo "** $field_spec HERER11111111111__$is_optional"
+			value="$(resolve_field "$json_file" "$field_spec" "$raw")"
+			if [[ "$field_spec" =~ ^[\']([^\']*)[\']$ ]]; then
+				####################################################echo "********************** xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxHERER11111111111__$is_optional"
+				is_literal=true
+				is_optional=true
+                if [[ "$value" =~ ^(.+)[?]?[%]([0-9]+)?d$ ]]; then
+                	local base_field="${BASH_REMATCH[1]}"
+                	local width="${BASH_REMATCH[2]:-0}"
+                	value="$base_field"
+                	printf_fmt="%0${width}d"
+                fi
+            fi
+		fi
+
+		__debug "VALUE: $value"
+
+		value="$(sanitize "$value")"
+
+		if ! $is_literal && [[ -z "$value" ]] && ! $is_optional; then
+			#echo "Formatter failed on $field_spec"
+			__debug "%s. Formatter failed on field %s. Pattern: %s" "_$formatter_number" "$field_spec" "$fmt"
+			failed=1
+			continue
+		fi
+
+		if [[ -n "$printf_fmt" ]]; then
+			if (  $is_optional || $is_literal ) && [[ -z "$value" ]]; then
+				value="0"
+			fi
+			###########echo "field_spec=$field_spec""
+			#########echo "printf_fmt=$printf_fmt""
+				##########echo "XXXXXXXXX $value"
+				value="$((10#$value))"
+				value=$(printf "$printf_fmt" "$value")
+				###############echo "XXXXXXX $value"
+		fi
+
+		# Handle printf formatting (e.g. 03d, 04d)
+		if [[ "$value" =~ ^(.+)[?]?[%]([0-9]+)?d$ ]]; then
+			local base_field="${BASH_REMATCH[1]}"
+			local width="${BASH_REMATCH[2]:-0}"
+			value="$base_field"
+			printf_fmt="%0${width}d"
+			__debug "FFFF $value"
+		elif [[ "$value" =~ ^(.+)?[?]?[%]([0-9]+)?d$ ]]; then
+			local base_field="${BASH_REMATCH[1]}"
+			local width="${BASH_REMATCH[2]:-0}"
+			value="$base_field"
+			printf_fmt="%0${width}d"
+			if [[ -z "$value" ]]; then
+				value="0"
+			fi
+			__debug "VVVVVV $value"
+		fi
+
+		if [[ -n "$printf_fmt" ]]; then
+				__debug "XXXXXXXXX $value"
+				if (  $is_optional || $is_literal ) && [[ -z "$value" ]]; then
+					value="0"
+				fi
+				value="$((10#$value))"
+				value=$(printf "$printf_fmt" "$value")
+				__debug "XXXXXXX $value"
+		fi
+
+
+		if [[ -n "$printf_fmt_condition" ]]; then
+			__debug "PPPPP $value"
+			if (  $is_optional ) && [[ -z "$value" ]]; then
+				value="0"
+			fi
+			value="$((10#$value))"
+			value=$(printf "$printf_fmt_condition" "$value")
+			__debug "PPPPP $value"
+		fi
+
+        if [[ -n "$field_value_always" ]]; then
+        	value="$field_value_always"
+        	__debug "AAAAAAAAAAAAAAVVVVVVVVVVVVVVVVVVVVVVVV $value"
+        fi
+
+		if [[ -n "$printf_fmt_always" ]]; then
+			__debug "PPPPP $value"
+			if (  $is_optional ) && [[ -z "$value" ]]; then
+				value="0"
+			fi
+			value="$((10#$value))"
+			__debug "AAAAAAAAAAAAAA $printf_fmt_always $value"
+			value=$(printf "$printf_fmt_always" "$value")
+			__debug "AAAAAAAAAAAAAA $value"
+		fi
+
+		#if [[ ! "$field_spec"  =~ ^[\'](.+)[\']$ ]]; then
+		if [[ ! "$field_spec"  =~ ^[\']([^\']*)[\']$ ]]; then
+			local func_name="field_format__${field_spec}"
+			local cache_key="has_${func_name}"
+			__debug "called $func_name"
+
+			# Check cache first
+			if [[ -z "${__field_formatter_cache[$cache_key]+x}" ]]; then
+				if [[ "$(type -t "$func_name")" == "function" ]]; then
+					   __field_formatter_cache["$cache_key"]=1
+				else
+					  __field_formatter_cache["$cache_key"]=0
+				fi
+			fi
+
+			# Call formatter if it exists
+			if [[ "${__field_formatter_cache[$cache_key]}" -eq 1 ]]; then
+				value="$("$func_name" "$value")"
+				value="$(sanitize "$value")"
+			fi
+		fi
+
+		__debug prefix-value-postfix="*${prefix}–${value}–${postfix}*"
+		# Build final replacement with prefix + value + postfix
+		value="${prefix}${value}${postfix}"
+
+		if [[ -n "$hashhash_function" ]]; then
+			local func_name="formatter__${hashhash_function}"
+			local cache_key="has_${func_name}"
+
+			__debug "called $func_name"
+			if [[ ! "$(type -t "$func_name")" == "function" ]]; then
+				failed=1
+				continue
+			fi
+
+			# Check cache first
+			if [[ -z "${__field_formatter_cache[$cache_key]+x}" ]]; then
+				if [[ "$(type -t "$func_name")" == "function" ]]; then
+					   __field_formatter_cache["$cache_key"]=1
+				else
+					  __field_formatter_cache["$cache_key"]=0
+				fi
+			fi
+
+			# Call formatter if it exists
+			if [[ "${__field_formatter_cache[$cache_key]}" -eq 1 ]]; then
+				value="$("$func_name" "$value")"
+				value="$(sanitize "$value")"
+			fi
+		fi
+
+        if [[ -z "$value" ]] && ! $is_optional; then
+			failed=1
+			continue
+        fi
+
+		target_path="${target_path//"$full_placeholder"/"$value"}"
+		failed=0
+		break
+	done
+}
+
+parse_field_formatter() {
+	local content="$1"
+
+	local -n is_optional_ref="$2"
+	local -n prefix_ref="$3"
+	local -n field_spec_ref="$4"
+	local -n postfix_ref="$5"
+	local -n printf_fmt_ref="$6"
+	local -n condition_field_ref="$7"
+	local -n condition_regex_ref="$8"
+	local -n condition_negate_ref="$9"
+	local -n condition_use_equality_ref="${10}"
+	local -n hashhash_function_ref="${11}"
+
+#	is_optional_ref=false
+#	prefix_ref=""
+#	field_spec_ref=""
+#	postfix_ref=""
+#	printf_fmt_ref=""
+#	condition_field_ref=""
+#	condition_regex_ref=""
+#	condition_negate_ref=false
+
+	# Parse hash hash function
+	if [[ "$content" =~ ^(.*)##([^##]+)$ ]]; then
+		content="${BASH_REMATCH[1]}"
+		hashhash_function_ref="${BASH_REMATCH[2]}"
+	fi
+
+	# Remove optional ?
+	if [[ "$content" == *'?' ]]; then
+		is_optional_ref=true
+		__debug "is_opt gen 0"
+		content="${content%\?}"
+	fi
+
+	# Parse pre:field:post syntax
+	if [[ "$content" =~ ^([^:]*):([^:]+):([^:]*)$ ]]; then
+		prefix_ref="${BASH_REMATCH[1]}"
+		field_spec_ref="${BASH_REMATCH[2]}"
+		postfix_ref="${BASH_REMATCH[3]}"
+	else
+		field_spec_ref="$content"
+	fi
+	# Check for condition: field=regex or field!=regex
+	if [[ "$field_spec_ref" =~ ^([^=]+)(!?)==(.*)(\?)$ ]]; then
+		condition_field_ref="${BASH_REMATCH[1]}"
+		condition_negate_ref=$([[ "${BASH_REMATCH[2]}" == "!" ]] && echo true || echo false)
+		condition_regex_ref="${BASH_REMATCH[3]}"
+		condition_use_equality_ref=true
+		field_spec_ref="${condition_field_ref}${BASH_REMATCH[4]}"
+	elif [[ "$field_spec_ref" =~ ^([^=]+)(!?)==(.*)$ ]]; then
+		condition_field_ref="${BASH_REMATCH[1]}"
+		condition_negate_ref=$([[ "${BASH_REMATCH[2]}" == "!" ]] && echo true || echo false)
+		condition_regex_ref="${BASH_REMATCH[3]}"
+		condition_use_equality_ref=true
+		field_spec_ref="${condition_field_ref}"
+	elif [[ "$field_spec_ref" =~ ^([^=]+)(!?)=(.*)(\?)$ ]]; then
+		condition_field_ref="${BASH_REMATCH[1]}"
+		condition_negate_ref=$([[ "${BASH_REMATCH[2]}" == "!" ]] && echo true || echo false)
+		condition_regex_ref="${BASH_REMATCH[3]}"
+		field_spec_ref="${condition_field_ref}${BASH_REMATCH[4]}"
+	elif [[ "$field_spec_ref" =~ ^([^=]+)(!?)=(.*)$ ]]; then
+		condition_field_ref="${BASH_REMATCH[1]}"
+		condition_negate_ref=$([[ "${BASH_REMATCH[2]}" == "!" ]] && echo true || echo false)
+		condition_regex_ref="${BASH_REMATCH[3]}"
+		field_spec_ref="${condition_field_ref}"
+	fi
+
+	# Remove optional ?
+	if [[ "$field_spec_ref" == *'?' ]]; then
+		is_optional_ref=true
+		__debug "is_opt gen 1"
+		field_spec_ref="${field_spec_ref%\?}"
+	elif [[ "$field_spec_ref" =~ ^(.+)[?][%]([0-9]+)?d$ ]]; then  #playlist_index?%03d
+		is_optional_ref=true
+		field_spec_ref="${BASH_REMATCH[1]}%${BASH_REMATCH[2]}d"
+		__debug "is_opt gen 2 $field_spec_ref"
+	fi
+
+	# Handle printf formatting (e.g. 03d, 04d)
+	if [[ "$field_spec_ref" =~ ^(.+)[?]?[%]([0-9]+)?d$ ]]; then
+		local base_field="${BASH_REMATCH[1]}"
+		local width="${BASH_REMATCH[2]:-0}"
+		field_spec_ref="$base_field"
+		printf_fmt_ref="%0${width}d"
+	fi
+}
+
+validate_formatters() {
+	local formatter
+	local invalid=()
+	local formatter_number=1
+
+	if (( ${#formatters[@]} == 0 )); then
+		__error "no file formatter set"
+		local_exit_failsafe
+	fi
+
+	for formatter in "${formatters[@]}"; do
+		formatters_as_string="$formatters_as_string\n\t\t\t\t\t$formatter_number. \t$formatter"
+		local target_path="$formatter"
+
+		while [[ "$target_path" =~ \{\{([^}]+)\}\} ]]; do
+			local full_placeholder="${BASH_REMATCH[0]}"
+			local content="${BASH_REMATCH[1]}"
+
+			test_pattern "$content"
+		done
+		 ((formatter_number++))
+	done
+
+	if (( ${#invalid[@]} > 0 )); then
+		echo "ERROR: Invalid field(s) in format_string:" >&2
+		echo "       ${invalid[*]}" >&2
+		echo "Valid fields are:" >&2
+		printf '   %s\n' "${json_fields[@]}" >&2
+		local_exit_failsafe
+	fi
+
+	return 0
+}
+
+function handle_file(){
+	local success=0
+	target_path=""
+	formatter_number=0
+
+	for fmt in "${formatters[@]}"; do
+		target_path="$fmt"
+		target_path="${target_path//\{\{file_extension\}\}/"$ext"}"
+		target_path="${target_path//\{\{ext\}\}/"$ext"}"
+
+		failed=0
+		while [[ "$target_path" =~ \{\{([^}]+)\}\} ]]; do
+			local full_placeholder="${BASH_REMATCH[0]}"
+			local content="${BASH_REMATCH[1]}"
+			if ! resolve_pattern "$content" "$json_file"; then
+				failed=1
+				break
+			fi
+			if (( failed == 1 )); then
+              	break
+            fi
+			__debug "target_path=$target_path"
+		done
+
+		((formatter_number++))
+
+		if (( failed == 1 )); then
+			continue
+		fi
+
+		success=1
+		break
+	done
+
+	if (( success == 0 )); then
+		$__debug && print_metadata_table "$json_file"
+		__warn "No format string could be fully resolved for %s.\nResolved path: %s" "$json_file" "$target_path"
+		#((ix==2)) && exit
+		((ix++))||:
+		return 1
+	fi
+
+	__debug "%s. Formatter chosen: format string %s" "_$formatter_number" "$fmt"
+
+	filename="$target_path"
+	return 0
+}
+
+ix=0
+
+function update_view() {
+	local view_name="$1"
+
+	__debug "view_name=$view_name"
+
+	if [[ ! -f "$view_name.view" ]]; then
+		__error "view %s not found" "$view_name.view"
+		local_exit_failsafe
+	fi
+
+	source -- "$view_name.view" || exit 1
+
+	handle_source_selector "$sources_file" "$view_name"
+
+	detect_filesystem "."
+
+	search_directory="🔴.undownloaded"
+
+	function __download_urls(){ :; } # the .queue file call these, they just need to exist.
+	function __configure_download(){ :; } # the .queue file call these, they just need to exist.
+
+	if [[ ! -f "$search_directory/$queue_name.queue" ]]; then
+		__info "run undownloader to download the files first"
+		__error "queue %s not found" "$search_directory/$queue_name.queue"
+		local_exit_failsafe
+	fi
+	source -- "$search_directory/$queue_name.queue" || exit 1
+
+	__debug  "real__template_name=$__template_name"
+	__debug  "real__regular_expression_configuration_matches=$__regular_expression_configuration_matches"
+
+	if [[ -n "$__regular_expression_configuration_matches" ]]; then
+		regex="$__regular_expression_configuration_matches"
+	else
+		regex='^.*\.(mkv|mka)$'
+	fi
+
+	formatters_as_string=""
+	declare -A __field_formatter_cache=()
+
+	if $archive_on_update; then
+		archive_directory="$template_name.archive"
+		mkdir --parents -- "$archive_directory"
+	fi
+
+	view_directory="$view_name"
+	if [[ -d "$view_directory" ]]; then
+		if $archive_on_update; then
+			__info "Updating view %s" "$(basename "$view_directory")"
+			mv -- "$view_directory" "$archive_directory/$view_name-$template_name-$__current_date" || echo "Warning: Failed to archive $view_directory"
+		else
+			__info "Replacing view %s" "$(basename "$view_directory")"
+			find "$view_directory" -type l -delete
+			find "$view_directory" -type d -empty -delete
+		fi
+	fi
+
+	mkdir --parents -- "$view_directory" || exit 1
+
+	validate_formatters
+
+	file_count=0
+	while IFS= read -r -d '' file; do
+		__debug
+		__debug
+		__debug "Processing %s" "$file"
+
+		filename="$(basename -- "$file")"
+		ext="${filename##*.}"
+
+		json_file="${file%.*}.info.json"
+		if [[ ! -f "$json_file" ]]; then
+			__warn "%s not found" "$json_file"
+			continue
+		fi
+
+		if ! handle_file; then
+			continue
+		fi
+
+		target_dir="$view_directory/$(dirname -- "$filename")"
+		target_file="$view_directory/$filename"
+
+		mkdir --parents -- "$target_dir" || exit 1
+
+		__info "Map file %s to %s using %s. formatter" "${file//"$search_directory"/}" "$target_path" "_$formatter_number"
+
+		# guarantee unique link names
+		if [[ -e "$target_file" ]]; then
+			target_file_directory="$(dirname -- "$target_file")"
+			filename_without_extension="$(basename -- "$filename")"
+			filename_without_extension="${filename_without_extension%.*}"
+			if [[ "$filename_without_extension" == "$ext" ]]; then
+				filename_without_extension=""
+			fi
+			n=1
+
+			while [[ -e "$target_file_directory/${filename_without_extension}.${n}.${ext}" ]]; do
+				((n++)) ||__expression_may_fail
+			done
+
+			target_file="$target_file_directory/${filename_without_extension}.${n}.${ext}"
+		fi
+
+		path_traversal="$(__to_path_traversal "$target_file")"
+		if ln --symbolic --logical --no-dereference "$path_traversal/$file" "$target_file"; then
+			((file_count++)) ||__expression_may_fail
+		fi
+
+	done < <(find "$search_directory" -type f -regextype posix-extended -iregex "$regex" -print0)
+
+	__info
+	__info "View %s contains %s files." "$view_name" "$file_count"
+
+	if (( file_count == 0 )); then
+		if [[ -d "$view_directory" ]]; then
+			find "$view_directory" -type l -delete
+			find "$view_directory" -type d -empty -delete
+		fi
+	else
+		{
+			echo "# View $view_name"
+			echo
+			echo -ne "Search directory: \t"
+			echo "$PWD/$search_directory"
+			echo
+			echo -ne "Regex: \t\t\t\t"
+			echo "$regex"
+			echo
+			echo -ne "Formatters: \t"
+			echo -e "$formatters_as_string"
+			echo
+			echo -ne "Linux mode: \t\t"
+			echo "$target_filesystem_is_linux"
+		} >| "$view_directory/README.markdown"
+	fi
+
+}
+
+sources_files=( *".sources" )
+
+if [[ -n "$input_sources_name" ]]; then
+	sources_file_name="$input_sources_name"
+
+	if (( ${#sources_files[@]} == 0 )); then
+		sources_file="$application_var_directory/sources/$sources_file_name.sources"
+	elif (( ${#sources_files[@]} == 1 )); then
+		sources_file="$input_sources_name"
+	else
+		__error "multiple *.sources files found."
+		local_exit_failsafe
+	fi
+
+	if [[ ! -f "$sources_file" ]]; then
+		__error "sources file %s does not exist" "$sources_file"
+		local_exit_failsafe
+	fi
+
+	sources_file="$(realpath --quiet -- "$sources_file")"
+
+	directory="$(dirname -- "$sources_file")"
+	cd -- "$directory/" || exit 1
+else
+	sources_file=""
+	if (( ${#sources_files[@]} == 0 )); then
+		__error "no sources file was found in current directory"
+		local_exit_failsafe
+	elif (( ${#sources_files[@]} == 1 )); then
+		sources_file="${sources_files[0]}"
+	else
+		PS3="Which source file shall be used to generate a view?"
+
+		select name in "${sources_files[@]}"; do
+			for reply in $REPLY; do
+				if [[ "$reply" =~ ^[1-9]+[0-9]*$ ]]; then
+					if (( ${#sources_files[@]} <= reply-1 )); then
+						continue
+					fi
+
+					sources_file="${sources_files[reply-1]}"
+					if [[ -n "$view_name" ]]; then
+						 break 2
+					fi
+				fi
+			done
+		done
+	fi
+fi
+
+__debug "sources_file=$sources_file"
+
+if [[ ! -f "$application_var_directory/view-templates/$default_view_name.view" ]]; then
+	__error "default view %s not found" "$application_var_directory/view-templates/$default_view_name.view"
+	local_exit_failsafe
+fi
+
+views_files=( *".view" )
+views=()
+
+if $update_all_views; then
+	if [[ -n "$input_view_name" ]]; then
+		if [[ ! -f "$input_view_name.view" ]]; then
+			__warn "view %s not found" "$input_view_name.view"
+			local_exit_failsafe
+		fi
+
+		__warn "both --update-all and input view %s are given. Action: all views are updated, the input views is ignored" "$input_view_name"
+	fi
+
+	for view_file in "${views_files[@]}"; do
+		view_name="$(basename -- "$view_file")"
+		view_name="${view_name%%.*}"
+		views+=( "$view_name" )
+	done
+else
+	if [[ -n "$input_view_name" ]]; then
+		if [[ ! -f "$input_view_name.view" ]]; then
+			__warn "view %s not found" "$input_view_name.view"
+
+			if __confirm "Shall I generate a default view file (template name: '$default_view_name') for this unit?"; then
+				cp -- "$application_var_directory/view-templates/$default_view_name.view" "$input_view_name.view" || exit 1
+			else
+				__info "exit"
+				local_exit_failsafe
+			fi
+		fi
+
+		views+=( "$input_view_name" )
+	else
+		view_name="$(basename -- "$sources_file")"
+		view_name="${view_name%%.*}"
+		views+=( "$view_name" )
+	fi
+fi
+
+for view_name in "${views[@]}"; do
+	( update_view "$view_name" )
+done

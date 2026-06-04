@@ -1,0 +1,6 @@
+#!/bin/bash
+
+archive_on_update=false
+
+formatters=("{{webpage_url_domain}}/{{id}}/{{id}}.{{file_extension}}")
+

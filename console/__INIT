@@ -1,0 +1,11 @@
+#!/bin/bash
+
+source -- ~/"bin/common-library.current" || exit 1
+__set_script_path
+__on_sigint_set_interrupted_flag
+
+bash --rcfile "./bashrc" -- ||__expression_may_fail
+#bash --restricted --rcfile "./bashrc" -- ||__expression_may_fail
+
+echo "EXIT UNDOWNLOADER INPUT CONSOLE"
+

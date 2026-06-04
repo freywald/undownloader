@@ -1,0 +1,183 @@
+#!/bin/bash
+
+# defaults
+run_view=false
+force_download=false
+quiet=false
+simulate=false
+ban_evasion=false
+scrape_comments=false
+fetch_new_links=false
+forget_downloads=false
+target_directory=""
+from_sources_file=""
+default_queues=()
+link_known_fail_list_full_file_path=""
+queue_failed_items_log_file=""
+__regular_expression__configuration_matches=""
+
+source -- "$__script_path/configuration/defaults" || exit 1
+
+base_directory="${default_target_directory:?}"
+
+function handle_source_selector(){
+	local file_selector="$1"
+	local view_name="${2:-}"
+
+	#@todo tests
+	#file_selector="audio:./file/a.b.c.vid.sources"
+	#file_selector="audio:/file/a.b.c.vid.sources"
+	#file_selector="audio:a.b.c.vid.sources"
+	#file_selector="a.b.c.vid.sources"
+	#file_selector="./gg/a.sources"
+	#file_selector="a.sources"
+	#file_selector="./gg/a.VID.sources"
+	#file_selector="a.VID.sources"
+	#file_selector="a.b.c.video.sources"
+	#file_selector="a.video.sources"
+
+	__debug "SELECTOR: $file_selector"
+
+	file_is_selector=false
+	if [[ "$file_selector" =~ : ]]; then
+		template_name="${file_selector%:*}"
+		file_selector="${file_selector#*:}"
+		file_is_selector=true
+	fi
+
+	sources_full_file_path="$file_selector"
+	sources_file_name="$(basename -- "$file_selector")"
+
+	if [[ -f "$application_var_directory/sources/$sources_file_name" ]]; then
+		sources_full_file_path="$application_var_directory/sources/$sources_file_name"
+		sources_file="$(realpath --quiet -- "$sources_full_file_path")"
+		if [[ -z "$view_name" ]]; then
+			view_name="$(basename -- "$sources_file")"
+			view_name="${view_name%%.*}"
+		fi
+		base_directory="$(dirname -- "$sources_file")"
+		cd -- "$base_directory" || exit 1
+	fi
+
+	queue_name="${sources_file_name%.*}"
+
+	if ! $file_is_selector; then
+		template_name="${queue_name##*.}"
+		if [[ "$queue_name" == "$template_name" ]]; then
+			template_name="$default_template_name"
+		fi
+		if [[ -z "$template_name" ]]; then
+			template_name="$default_template_name"
+		fi
+		unit_name="${queue_name%.*}"
+	else
+		unit_name="$queue_name"
+	fi
+
+	if [[ -z "$view_name" ]]; then
+		view_name="$unit_name"
+	fi
+
+	__debug "view_name=$view_name"
+	__debug "unit_name=$unit_name"
+	__debug "template_name=$template_name"
+	__debug "sources_full_file_path=$sources_full_file_path"
+	__debug "sources_file_name=$sources_file_name"
+	__debug "queue_name=$queue_name"
+
+	base_directory="$PWD/🔴.undownloaded"
+
+	if [[ -n "$target_directory" ]]; then
+		download_directory="$target_directory/"
+	else
+		download_directory="$base_directory/files/"
+	fi
+	__debug "PWD=$PWD"
+	__debug "base_directory=$base_directory"
+	__debug "download_directory=$download_directory"
+
+	sources_full_file_real_path="$sources_full_file_path"
+
+
+	if [[ "${sources_full_file_path:0:1}" != "/" ]]; then
+		sources_full_file_real_path="$(realpath --quiet -- "$__current_directory/$sources_full_file_real_path")"
+	else
+		sources_full_file_real_path="$(realpath --quiet -- "$sources_full_file_real_path")"
+	fi
+
+	__debug "SELECTOR: $file_selector"
+}
+
+# returns video URL with &list= appended if exactly one matching playlist is found
+function handle_youtube_url(){
+	local video_url="$1"
+
+	local cache_directory="$application_var_directory/playlist-cache/"
+	mkdir --parents "$cache_directory/videos/" || exit 1
+	mkdir --parents "$cache_directory/channels/" || exit 1
+	mkdir --parents "$cache_directory/playlists/" || exit 1
+
+	if [[ "$video_url" =~ v=([a-zA-Z0-9_\-]+) ]]; then
+		video_id="${BASH_REMATCH[1]}"
+	elif [[ "$video_url" =~ playlist\?list=([a-zA-Z0-9_\-]+) ]]; then
+		return 0
+	else
+		return 1
+	fi
+
+	local fast="--sleep-requests 0 --sleep-interval 0"
+	local video
+	local video_cache="$cache_directory/videos/$video_id.txt"
+	local video_id channel_id
+	if [[ ! -f "$video_cache" ]]; then
+		video="$(yt-dlp $fast --dump-single-json --simulate --no-download-archive --no-warnings -- "$video_url" 2>"/dev/null")"
+
+		video_id="$(jq -r '.id' <<< "$video")"
+		channel_id="$(jq -r '.channel_id' <<< "$video")"
+
+		if [[ -z "$channel_id" || -z "$video_id" ]]; then
+			return 1
+		fi
+		echo "$video_id|$channel_id" >| "$video_cache"
+	else
+		video="$(cat -- "$video_cache")"
+
+		IFS='|' read -r video_id channel_id <<< "$video"
+	fi
+
+	local playlists
+	local playlists_cache="$cache_directory/channels/$channel_id.txt"
+	if [[ ! -f "$playlists_cache" ]]; then
+		playlists="$(yt-dlp $fast --flat-playlist --print "%(id)s" -- "https://www.youtube.com/channel/${channel_id}/playlists" 2>"/dev/null")"
+		echo "$playlists" >| "$playlists_cache"
+	else
+		playlists="$(cat -- "$playlists_cache")"
+	fi
+
+	local found_playlist_id=""
+
+	local playlist_id=""
+	while IFS='|' read -r playlist_id; do
+		[[ -z "$playlist_id" ]] && continue
+
+		local playlist_data
+		local playlist_cache="$cache_directory/playlists/${channel_id}–${playlist_id}.txt"
+		if [[ ! -f "$playlist_cache" ]]; then
+			playlist_data="$(yt-dlp $fast --flat-playlist --print id -- "https://www.youtube.com/playlist?list=$playlist_id" 2>"/dev/null")"
+			echo "$playlist_data" >| "$playlist_cache"
+		else
+			playlist_data="$(cat -- "$playlist_cache")"
+		fi
+
+		if echo "$playlist_data" | grep -- "^$video_id$" >"/dev/null"; then
+			found_playlist_id="$playlist_id"
+			break
+		fi
+	done <<< "$playlists"
+
+	if [[ -n "$found_playlist_id" ]]; then
+		echo "https://youtube.com/watch?v=${video_id}&list=${found_playlist_id}"
+	else
+		echo "https://youtube.com/watch?v=${video_id}"
+	fi
+}

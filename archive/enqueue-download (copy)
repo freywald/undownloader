@@ -1,0 +1,90 @@
+#!/bin/bash
+
+if (( $# == 0 )); then
+	echo "Usage: $0 <queue name> <data>"
+	echo "Usage: $0 <queue template name>:<queue file location> <download URL>"
+	exit 1
+fi
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base"
+__set_script_path
+source -- "$__script_path/configuration/defaults"
+
+force=false
+if [[ "$1" == "--force" ]]; then
+	force=true
+	shift ||:
+fi
+
+template_name="${1%:*}"
+queue_full_file_path="${1#*:}"
+
+if [[ "$queue_full_file_path" == "$template_name" ]]; then
+	queue_file="$application_var_directory/queues/$template_name.queue"
+else
+	queue_file="$queue_full_file_path"
+fi
+
+if [[ ! -f "$queue_file" ]]; then
+	__error "queue file '%s' does not exist" "$queue_file"
+	__exit_failsafe
+fi
+
+queue_name="$template_name"
+shift ||:
+
+function handle_line() {
+	parameters=()
+
+	for parameter in "$@"; do
+		parameters+=( "\"$parameter\"" )
+			echo === "\"$parameter\""
+	done
+			return
+
+	item_count="${#parameters[@]}"
+
+	if ! $force; then
+		line="${parameters[*]}"
+	else
+		current_date="$(date +%Y%m%d%H%M%S)"
+		line="${parameters[*]} --download-archive=$application_var_directory/archive/$queue_name-$current_date.memory"
+		((item_count++))||:
+	fi
+
+	line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items
+
+	# source: https://blog.stigok.com/2018/05/31/surprising-sed-replace-uri-with-ampersand.html
+	# escape certain characters
+	line=$(sed 's/[&/\]/\\&/g' <<< "$line")
+
+	# source: https://unix.stackexchange.com/questions/188264/how-do-i-substitute-only-first-occurence-with-sed
+	# insert download data below top-most "+ \" insertion marker, but none other if existing
+	sedex="/^+ \\\/{s//+ \\\\\n$line\\\/;:p;n;bp}"
+	sed -i "$sedex" "$queue_file" && echo "The data item '${parameters[0]}' was appended to the processing queue '$queue_name'."
+
+	# link-muddler-delete-link "${parameters[0]}" #@fixme
+}
+
+if [[ -z "${1:-}" ]]; then
+	previous_line=""
+	echo "No data provided, entering INPUT MODE, use linebreak to exit"
+
+	while true; do
+		read -r line
+
+		if [[ -n "$line" ]]; then
+			lines=("$line")
+			handle_line "$line"
+		fi
+
+		if [[ "${previous_line}${line}" == "" ]]; then #both are empty
+			break
+		fi
+
+		previous_line="$line"
+	done
+else
+	handle_line "$@"
+	shift ||:
+fi

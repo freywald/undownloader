@@ -7,27 +7,26 @@
 #
 
 # CONFIGURATION
-__download_with_configuration \
+__configure_download \
 `# run yt-dlp with these options:…` \
-yt-dlp  \
+yt-dlp \
 --live-from-start \
---windows-filenames \
---output-na-placeholder "UNKNOWN_PLACEHOLDER_DEBUG_REMOVE" \
-`# only last run should use download archive` \
+--no-restrict-filenames \
+--compat-options no-clean-infojson \
+--output-na-placeholder "UNKNOWN_PLACEHOLDER" \
+`# only last __configure_download call should use a download archive because the same .memory file is used` \
 --no-download-archive \
 `# show progress` \
 --console-title --progress --newline --quiet \
 `# output file template` \
 --parse-metadata "description:(?s)(?P<meta_comment>.+)" \
---parse-metadata "%(title|)s:%(title_with_separator)s" \
---replace-in-metadata "title_with_separator" "\s-\s" " – " \
--o "%(webpage_url_domain.:-4)s/files/%(channel)s%(channel_id& [{}]|)s/%(title_with_separator,title)s%(display_id& [{}]|)s/%(title_with_separator,title|)s.%(ext)s" \
--o "pl_video:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_thumbnail:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_description:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_infojson:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "%(webpage_url_domain)s/audio+video/%(channel_id|uploader_id)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/audio+video/NA/%(id)s/%(id)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(id)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
 `# quality and file format` \
--f bestvideo+bestaudio \
 --merge-output-format mkv --remux-video mkv \
 --post-overwrites \
 `# thumbnails` \
@@ -35,7 +34,7 @@ yt-dlp  \
 --convert-thumbnails png \
 --embed-thumbnail \
 `# subtitles` \
---sub-lang en \
+--sub-lang "en.*" \
 --write-auto-subs \
 --write-sub \
 --convert-subs srt \
@@ -45,24 +44,22 @@ yt-dlp  \
 --embed-info-json \
 --embed-chapters \
 
-
-__download_with_configuration \
+__configure_download \
 `# run yt-dlp with these options:…` \
 yt-dlp \
 --live-from-start \
---windows-filenames \
---output-na-placeholder "UNKNOWN_PLACEHOLDER_DEBUG_REMOVE" \
+--no-restrict-filenames \
+--output-na-placeholder "UNKNOWN_PLACEHOLDER" \
 `# show progress` \
 --console-title --progress --newline \
 `# output file template` \
 --parse-metadata "description:(?s)(?P<meta_comment>.+)" \
---parse-metadata "%(title|)s:%(title_with_separator)s" \
---replace-in-metadata "title_with_separator" "\s-\s" " – " \
--o "%(webpage_url_domain.:-4)s/files/%(channel)s%(channel_id& [{}]|)s/%(title_with_separator,title)s%(display_id& [{}]|)s/%(title_with_separator,title|)s.%(ext)s" \
--o "pl_video:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_thumbnail:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_description:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_infojson:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "%(webpage_url_domain)s/audio+video/%(channel_id|uploader_id)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/audio+video/%(id)s/%(id)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(id)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
 `# quality and file format` \
 --extract-audio \
 --remux mka \
@@ -71,7 +68,7 @@ yt-dlp \
 --convert-thumbnails png \
 --embed-thumbnail \
 `# subtitles` \
---sub-lang en \
+--sub-lang "en.*" \
 --write-auto-subs \
 --write-sub \
 --convert-subs srt \
@@ -80,3 +77,9 @@ yt-dlp \
 --embed-metadata \
 --embed-info-json \
 --embed-chapters \
+
+__regular_expression_configuration_matches='^.*\.(mkv|mka)$'
+
+__template_name="${BASH_SOURCE[0]}"
+__template_name="$(basename -- "${__template_name%%.*}")"
+

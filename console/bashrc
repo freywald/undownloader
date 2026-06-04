@@ -1,0 +1,58 @@
+#!/bin/bash
+__eX10DEAD_ONCE_INITIALIZED="$PWD"
+source -- "$HOME/.bashrc" || exit 1
+__enable_error_handler
+
+cd -- "./home"|| exit 1
+
+unalias -a
+
+__handle_application_path "./bin/"
+
+__set_title "UNDOWNLOADER INPUT CONSOLE"
+
+help_text=$(cat -- "../undownloader.markdown")
+#__usage_example "$help_text"
+alias help="__usage_example \"$help_text\""
+
+cd -- "bin" || exit 1
+
+function help() {
+	__usage_example "$help_text"
+	echo "undownloader"
+	echo
+
+	ls -1 /home/ju/Daten1/var/undownloader/application/queues/*".queue" | while read file; do if [[ -L "$file" ]]; then \
+		transport=""; \
+		link="$(dirname -- "$(readlink --canonicalize --no-newline --quiet -- "./$file")")"; \
+		#transport="$(grep -oP -- "--transport=\"(\K[^\"]*)" "$file" 2>"/dev/null")" || transport="rsync";  \
+		echo -e "    \e[37m./\e[1;35m${file%.*} \e[0;37m		\e[37mfrom:\e[34m $link\033[0m"; else echo -e "    \e[37m./\e[1;35m${file%.*}\033[0m"; fi; done
+	echo
+}
+
+source -- "$HOME/applications/undownloader/configuration/aliases" || exit 1
+
+PATH="$PWD:/mnt/daten_local/Media/applications/undownloader/bin:$PATH"
+
+help
+
+PROMPT_COMMAND="history -a;echo -ne \"\033]0; UNDOWNLOADER 〰 INPUT CONSOLE\007\""
+PS0=""
+PS1="${COLOR_BOLD_RED}UNDOWNLOADER 〰 INPUT CONSOLE${COLOR_RESTORE}${COLOR_GRAY} ━━━━━ "
+
+set -o noglob # required so that 'da https://www.youtube.com/watch?v=16dK7gWFqI4' the url does not need to be quoted with "", in this case specifically because of special glob character ?
+
+# DISABLE EVERY SINGLE BASH BUILTIN
+for b in $(compgen -b); do
+	[[ "$b" == "help" || "$b" == "echo" || "$b" == "continue" || "$b" == "cat" || "$b" == "alias" || "$b" == "tput" || "$b" == "history" ]] && continue
+  	enable -n "$b" 2>"/dev/null" ||__expression_may_fail
+  	alias "$b"="true"
+done
+
+command_not_found_handle() {
+	true
+}
+
+shopt -s expand_aliases ||__expression_may_fail
+
+

@@ -18,30 +18,42 @@ function get_library_path()
 	cd -- "$former_directory" || exit 1
 }
 
+LIBRARY_PATH="$(get_library_path)"
+
 function d() {
 	local queue_name
-	queue_name="$1"
-	shift
+	queue_name="${1:-}"
+	shift ||__expression_may_fail
 
-	"$(get_library_path)/handlers/enqueue" "$queue_name" "$@"
+	__call_handler "enqueue" "$queue_name" "$@"
 }
 
 function dv() {
-	"$(get_library_path)/handlers/enqueue-video" "$@"
+	__call_handler "enqueue-video" "$@"
 }
 
 function dap() {
-	"$(get_library_path)/handlers/enqueue-audio_playlist" "$@"
+	__call_handler "enqueue-audio_playlist" "$@"
 }
 
 function dav() {
-	"$(get_library_path)/handlers/enqueue-audio+video" "$@"
+	__call_handler "enqueue-audio+video" "$@"
 }
 
 function da() {
-	"$(get_library_path)/handlers/enqueue-audio" "$@"
+	__call_handler "enqueue-audio" "$@"
 }
 
 function das() {
-	"$(get_library_path)/handlers/enqueue-audio" "$@"
+	__call_handler "enqueue-audio_simple" "$@"
+}
+
+function __call_handler() {
+	handler_name="$1"
+	shift ||__expression_may_fail
+
+	PATH= /bin/env --ignore-environment HOME="$HOME" USER="$USER" XDG_SESSION_ID="$XDG_SESSION_ID" /bin/bash -ci 'exec "$0" "$@"' "$LIBRARY_PATH/handlers/$handler_name" "$@" ||__expression_may_fail
+	# old alternatives, less fine
+	#PATH= /bin/env -u PATH /bin/bash -ci 'exec "$0" "$@"' "$LIBRARY_PATH/handlers/$handler_name" "$@" ||__expression_may_fail
+    #PATH= /bin/env --ignore-environment HOME="$HOME" USER="$USER" XDG_SESSION_ID="$XDG_SESSION_ID" /bin/bash -ci -- '"'$LIBRARY_PATH'/handlers/$handler_name" "$0" "$@"' "$@" ||__expression_may_fail
 }

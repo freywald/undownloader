@@ -1,0 +1,43 @@
+#!/bin/bash
+
+#force_target_filesystem_is_linux="true" # "true" = Linux → minimal sanitization or: Windows compatibility mode
+
+json_fields=(
+        # Core identifiers (always recommended)
+        "id" "display_id" "webpage_url" "webpage_url_domain" "file_extension" "extractor" "extractor_key"
+
+        # Owner / Channel / Uploader (most important for organization)
+        "channel" "channel_id"
+        "uploader" "uploader_id" "uploader_url"
+        "artist" "album_artist" "composer"
+
+        # Title & Metadata
+        "title" "fulltitle" "alt_title"
+        "description" "meta_comment"
+
+        # Music-specific
+        "album" "track" "track_number" "genre" "license"
+
+        # Dates
+        "upload_date" "release_date" "release_year" "timestamp" "release_timestamp"
+
+        # Playlist / Collection
+        "playlist" "playlist_id" "playlist_index" "playlist_title"
+
+        # Stats
+        "view_count" "like_count" "comment_count"
+
+        # Technical / Other useful fields
+        "duration" "duration_string"
+        "thumbnail" "thumbnails"
+        "original_url"
+        "webpage_url_basename"
+        "_type"
+
+	    "series" "episode" "episode_number" "season_number"
+		"creator" "play_count" "repost_count"
+		"categories" "tags"
+		"age_limit" "availability"
+ )
+
+formatters=()

@@ -1,0 +1,78 @@
+#!/bin/bash
+
+if (( $# == 0 )); then
+	echo "Usage: $0 <sources file name> <download data+URL>"
+	echo "Usage: $0 <sources file location> <download data+URL>"
+	exit 1
+fi
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base" || exit 1
+__set_script_path
+__enable_error_handler
+source -- "$__script_path/configuration/defaults" || exit 1
+
+force=false
+if [[ "$1" == "--force" ]]; then
+	force=true
+	shift ||__expression_may_fail
+fi
+
+if [[ -z "$1" ]]; then
+	__error "sources file not given"
+	__exit_failsafe
+fi
+
+sources_file_path="$1"
+
+if [[ -f "$application_var_directory/sources/$sources_file_path.sources" ]]; then
+	sources_file_path="$application_var_directory/sources/$sources_file_path.sources"
+fi
+
+if [[ ! -f "$sources_file_path" ]]; then
+	__error "sources file '%s' does not exist" "sources_file_path"
+	__exit_failsafe
+fi
+
+sources_file_name="$(basename -- "$sources_file_path")"
+sources_file_name="${sources_file_name%%.*}"
+shift ||__expression_may_fail
+
+function handle_line() {
+	local parameters=()
+
+	line="$*"
+    local separator=" --"$'\t'
+    local escaped_separator=" --\\"$'\t'
+    line="${line//"$separator"/"$escaped_separator"}" #escape input
+
+	echo "$line" >> "$sources_file_path" &&
+	echo "The url '$line' is appended to the source file '$sources_file_name'."
+
+	# link-muddler-delete-link "${parameters[0]}" #@fixme
+}
+
+if [[ -z "${1:-}" ]]; then
+	previous_line="?"
+	echo "No data provided, entering INPUT MODE, use linebreak to exit"
+
+	while true; do
+		read -r line
+		mapfile -t lines < <(xargs -n1 printf '%s\n' <<< "$(__trim_string_balanced "$line" \")")
+		set -- "${lines[@]}"
+
+		if (( $# > 0 )) && [[ $1 != "" ]]; then
+			handle_line "$@"
+		else
+			line=""
+		fi
+
+		if [[ "${previous_line}${line}" == "" ]]; then #both are empty
+			break
+		fi
+
+		previous_line="$line"
+	done
+else
+	handle_line "$@"
+fi
+

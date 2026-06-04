@@ -1,0 +1,800 @@
+#!/bin/bash
+set -o errtrace -o pipefail -o noclobber -o nounset
+shopt -s inherit_errexit nullglob dotglob
+#shopt -s inherit_errexit failglob dotglob # uses failglob instead of nullglob
+
+export LC_NUMERIC="en_US.UTF-8"
+
+trap '[[ "$?" -ne 140 ]] || exit 140' ERR
+
+__interrupted=false
+__debug=false
+__quiet=false
+__verbose=false
+__script_path=""
+__its_still_dangerous=true
+
+COLOR_BLUE="\[\e[34m\]"
+COLOR_GREEN="\[\e[32m\]"
+COLOR_CYAN="\[\e[36m\]"
+COLOR_RED="\[\e[31m\]"
+COLOR_PURPLE="\[\e[35m\]"
+COLOR_BROWN="\[\e[33m\]"
+COLOR_YELLOW="\[\e[33m\]"
+COLOR_GRAY="\[\e[37m\]"
+COLOR_WHITE="\[\e[37m\]"
+COLOR_BLACK="\[\e[30m\]"
+
+COLOR_BOLD_BLUE="\[\e[1;34m\]"
+COLOR_BOLD_GREEN="\[\e[1;32m\]"
+COLOR_BOLD_CYAN="\[\e[1;36m\]"
+COLOR_BOLD_RED="\[\e[1;31m\]"
+COLOR_BOLD_PURPLE="\[\e[1;35m\]"
+COLOR_BOLD_BROWN="\[\e[1;33m\]"
+COLOR_BOLD_YELLOW="\[\e[1;33m\]"
+COLOR_BOLD_GRAY="\[\e[1;37m\]"
+COLOR_BOLD_WHITE="\[\e[1;37m\]"
+COLOR_BOLD_BLACK="\[\e[1;30m\]"
+
+COLOR_BACKGROUND_BLUE="\[\e[44m\]"
+COLOR_BACKGROUND_GREEN="\[\e[42m\]"
+COLOR_BACKGROUND_CYAN="\[\e[46m\]"
+COLOR_BACKGROUND_RED="\[\e[41m\]"
+COLOR_BACKGROUND_PURPLE="\[\e[45m\]"
+COLOR_BACKGROUND_BROWN="\[\e[33m\]"
+COLOR_BACKGROUND_YELLOW="\[\e[43m\]"
+COLOR_BACKGROUND_GRAY="\[\e[47m\]"
+COLOR_BACKGROUND_WHITE="\[\e[47m\]"
+COLOR_BACKGROUND_BLACK="\[\e[40m\]"
+
+COLOR_RESTORE="\[\e[0m\]" #0m restores to the terminal's default colour
+
+__COLOR_RESET="\033[0m"
+__COLOR_LOG_DATE="\033[0;36m"
+__COLOR_HEADING="\033[1;97m"
+__COLOR_HIGHLIGHT="\033[1;34m"
+__COLOR_LOG="\033[0;39m"
+__COLOR_INFO="\033[0;32m"
+__COLOR_VERBOSE="\033[0;38m"
+__COLOR_WARNING="\033[1;33m"
+__COLOR_DEBUG="\033[1;35m"
+__COLOR_ERROR="\033[1;31m"
+
+function __on_sigint_set_interrupted_flag() {
+	trap '__interrupted=true' SIGINT
+}
+
+function __on_sigint_unset_interrupted_flag() {
+ 	trap - SIGINT
+ }
+
+function __create_temporary_file() {
+    local prefix
+    prefix="$(basename -- "$0")"
+
+    mktemp -- "${TMPDIR:-/tmp/}/${prefix}.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+}
+
+__current_date="$(date +%d-%m-%Y-%H-%M-%S)"
+__current_date_as_string="$(date +"%d.%m.%Y [%H∶%M∶%S]" --)"
+
+__current_directory="$(pwd -P --)/"
+__current_directory_name="$(basename -- "$(realpath -- ".")")"
+__current_script_name="$(basename -- "$0")"
+
+function __expression_may_fail() {
+	true
+}
+
+function __confirm_dangerous_operation() {
+	local warning="
+ ▄▄\t\tPLEASE CONFIRM A DANGEROUS OPERATION.
+ ██
+ ██"
+
+	local warning_exclamation="
+ ▄▄
+ ██
+ ██
+ ▀▀
+ ██ "
+	if __ask_dangerous_operation "$warning \t\$ $(basename -- "$0") $*\n ▀▀ \n ██\t\twithin: '$PWD'\n\n" || __ask_dangerous_operation "Are you sure?" || __ask_dangerous_operation "Are you *really* sure?" || (echo -e "$warning_exclamation\n\nWrong answer. I'll give you 15 extra seconds to think about it.\nPlease try to think straight!\n\n\tThe command: \t'\$ $(basename -- "$0") $*'\n\tCalled within: \t'$PWD'.\n" && echo -e "\n\n" && sleep 15 && __ask_dangerous_operation "Try again. Please type 'no' to not confirm."); then
+		echo "You weren't sure enough."
+		exit 0
+	fi
+	__its_still_dangerous=false
+}
+
+
+function __ask_dangerous_operation() {
+	echo -en "$1"
+	echo
+	shift ||:
+
+	# ignore input buffer, ignore anything, especially 'yes' during sleep, silently discard the buffer
+	while read -t 0 _notused; do
+	   read -r _input
+	done
+
+    read -r -p "Type 'yes' to confirm: " reply
+    echo;echo
+
+    [[ "${reply,,}" == "yes" ]] && return 1
+	return 0
+}
+
+
+function __confirm() {
+	echo -en "$1"
+	echo
+	shift ||:
+
+	# ignore input buffer, ignore anything, especially 'yes' during sleep, silently discard the buffer
+	while read -t 0 _notused; do
+	   read -r _input
+	done
+
+    read -r -p "Type 'yes' to confirm: " reply
+    echo
+
+    [[ "${reply,,}" == "yes" ]] && return 0
+	return 1
+}
+
+function __add_new_path_to_path() {
+	local new_path="$1"
+	shift ||__expression_may_fail
+
+	local position="${2:-}"
+	shift ||__expression_may_fail
+
+	local additional_path
+	additional_path="$(realpath --quiet --canonicalize-missing -- "$new_path")"
+
+	if [[ ":$PATH:" != *":$additional_path:"* ]]; then
+		if [[ "$position" == "after" ]]; then
+			PATH="$PATH:$additional_path"
+		else
+			PATH="$additional_path:$PATH"
+		fi
+	fi
+}
+
+function __handle_application_path() {
+	local new_path="$1"
+	shift ||__expression_may_fail
+
+	find "$new_path/" -maxdepth 1 -type f -exec chmod +x -- {} +
+	__add_new_path_to_path "$new_path"
+}
+
+function __force_working_directory() {
+	current_script_name="$1"
+	base_directory_name="$2"
+	if [[ "$__current_directory_name" != "$base_directory_name" ]]; then
+		__error "Please run the script %s in the %s directory." "./$(basename -- "$current_script_name")" "$base_directory_name"
+		__exit_failsafe
+	fi
+}
+
+function __erase_empty_file() {
+	local full_file_path="$1"
+	shift ||__expression_may_fail
+
+	[[ -f "$full_file_path" && ! -s "$full_file_path" ]] && rm -- "$full_file_path"
+	true
+}
+
+function __nclr() {
+	local j
+
+	for ((j = 0; j <= "${1:-1}"; j++ )); do
+		tput cuu1
+	done
+
+	tput ed
+}
+
+__guard_program_exists() {
+	local program_name="$1"
+
+	if ! command -v "$program_name" > "/dev/null"; then
+		__error "Program %s not installed." "$program_name"
+		exit 1
+	fi
+}
+
+function __enable_error_handler() {
+
+	function __handle_error() {
+		# @source https://gist.github.com/bkahlert/08f9ec3b8453db5824a0aa3df6a24cb4
+
+		if (( $1 == 140 )); then
+			return 0
+		fi
+
+		local esc_red
+		esc_red="$(tput setaf 1 ||__expression_may_fail)"
+
+		local esc_reset
+		esc_reset="$(tput sgr0 ||__expression_may_fail)"
+
+		printf "\n${esc_red-}✘${esc_reset-}\tin program:\t %s\n\tat location: %s\n\tat line:\t %s\n\tcode:\t\t %s\n" "${0##*/}"  "$3" "$2" "$1" >&2
+
+		exit "$1"
+	}
+
+	trap '__handle_error "$?" "${BASH_COMMAND:-?}" "${FUNCNAME[0]:-main}(${BASH_SOURCE[0]:-?}:${LINENO:-?})"' ERR
+}
+
+#function __may_fail() {
+#	__LAST_STATUS=$?
+#	echo "Real status was: $__LAST_STATUS"     # This will show 1
+#    :
+#}
+
+#__enable_error_handler
+#echo "true" && true && true ||__may_fail
+#echo "Exit status: $__LAST_STATUS"
+
+#echo "false" && true && false ||__may_fail
+#echo "Exit status: $__LAST_STATUS"
+
+function __array_contains()
+{
+	local token="$1"
+	shift ||__expression_may_fail
+
+	for element in "$@"; do
+		[[ "$token" == "$element" ]] && return 0
+	done
+
+	return 1
+}
+
+function __count_path_segments() {
+    local s=0 path="$1"
+    [[ -z "$path" ]] && { echo 0; return; }
+
+    IFS='/' read -ra a <<< "$path"
+    for path_segment in "${a[@]}"; do
+        [[ -z "$path_segment" || "$path_segment" == "." ]] && continue
+        if [[ "$path_segment" == ".." ]]; then
+        	((s--)) ||__expression_may_fail
+        else
+        	((s++)) ||__expression_may_fail
+        fi
+    done
+
+    if [[ "${path: -1}" != "/" ]]; then
+		((s--)) ||__expression_may_fail
+	fi
+
+    echo "$s"
+}
+
+function __to_path_traversal() {
+    local s="" path="$1"
+    [[ -z "$path" ]] && { echo 0; return; }
+	cover_last_slash=true
+    IFS='/' read -ra a <<< "$path"
+    for path_segment in "${a[@]}"; do
+        [[ -z "$path_segment" || "$path_segment" == "." ]] && continue
+        if [[ "$path_segment" == ".." ]]; then
+        	s="$path_segment/$s"
+        else
+        	if $cover_last_slash && [[ "${path: -1}" != "/" ]]; then
+        		cover_last_slash=false
+        	else
+        		s="../$s"
+        	fi
+        fi
+    done
+
+    echo "$s"
+}
+
+
+function __strip_slash() { # @source: https://github.com/MitMaro/server-rsync-backup
+	if [[ "$1" == "/" ]]; then
+		echo "$1"
+	else
+		echo "${1%/}"
+	fi
+}
+
+function __join_by { # @source: https://github.com/MitMaro/server-rsync-backup
+	local d="${1-}"
+	local f="${2-}"
+
+	if shift 2 ||__expression_may_fail; then
+		printf "%s" "$f" "${@/#/$d}"
+	fi
+}
+
+function __normalize_absolute_path() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    local s="$1"
+
+	if [[ -z "${s// }" ]]; then
+		__error "__normalize_absolute_path"
+		__exit_failsafe
+        return 1    ###
+	fi
+
+    echo "/$(__strip_path_slashes "$1")/"
+}
+
+function __right_normalize_absolute_path() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    local s="$1"
+    local keep_left="${2:-true}"
+
+	if [[ -z "${s// }" ]]; then
+		__error "__right_normalize_absolute_path"
+		__exit_failsafe
+        return 1    ###
+	fi
+
+	if $keep_left; then
+		echo "$(__strip_path_slashes_right "$1")/"
+	else
+   		echo "$(__strip_path_slashes "$1")/"
+    fi
+}
+
+function __left_normalize_absolute_path() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    local s="$1"
+    local keep_right="${2:-true}"
+
+	if [[ -z "${s// }" ]]; then
+		__error "__left_normalize_absolute_path"
+		__exit_failsafe
+        return 1    ###
+	fi
+
+	if $keep_right; then
+		echo "/$(__strip_path_slashes_left "$1")"
+	else
+   		echo "/$(__strip_path_slashes "$1")"
+    fi
+}
+
+function __strip_path_slashes() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    if (( $# != 1 )); then
+		__error "__strip_path_slashes"
+		__exit_failsafe
+        return 1    ###
+    fi
+
+    local s="$1"
+
+    while :; do
+		if [[ "${s: -1}" != "/" ]]; then
+			break
+		fi
+
+		s="${s:0:-1}"
+    done
+
+    while :; do
+		if [[ "${s:0:1}" != "/" ]]; then
+			break
+		fi
+
+		s="${s:1}"
+    done
+    echo "$s"
+
+    return 0
+}
+
+function __strip_path_slashes_left() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    if (( $# != 1 )); then
+		__error "__strip_path_slashes_left"
+		__exit_failsafe
+        return 1    ###
+    fi
+
+    local s="$1"
+
+    while :; do
+    	if [[ "${s: -1}" != "/" || "${s: -2:1}" != "/" ]]; then # keep one left "/" if it exists
+			break
+		fi
+
+		s="${s:0:-1}"
+    done
+
+    while :; do
+		if [[ "${s:0:1}" != "/" ]]; then
+			break
+		fi
+
+		s="${s:1}"
+    done
+    echo "$s"
+
+    return 0
+}
+
+function __strip_path_slashes_right() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    if (( $# != 1 )); then
+		__error "__strip_path_slashes_right"
+		__exit_failsafe
+        return 1    ###
+    fi
+
+    local s="$1"
+
+    while :; do
+		if [[ "${s: -1}" != "/" ]]; then
+			break
+		fi
+
+		s="${s:0:-1}"
+    done
+
+    while :; do
+		if [[ "${s:0:1}" != "/" || "${s:1:1}" != "/" ]]; then # keep one right "/" if it exists
+			break
+		fi
+
+		s="${s:1}"
+    done
+    echo "$s"
+
+    return 0
+}
+
+function __trim_whitespaces2() {
+    local trimmed="$(cat -)"
+
+    # Strip leading spaces.
+    while [[ $trimmed == ' '* ]]; do
+       trimmed="${trimmed## }"
+    done
+    # Strip trailing spaces.
+    while [[ $trimmed == *' ' ]]; do
+        trimmed="${trimmed%% }"
+    done
+
+    echo "$trimmed"
+}
+
+function __trim_string() # @source: https://jcgoran.github.io/2021/02/07/bash-string-trimming.html
+{
+    if (( $# != 1 )); then
+		__error "__trim_string"
+		__exit_failsafe
+        return 1    ###
+    fi
+
+    local s="$1"
+    local size_before="${#s}"
+    local size_after=0
+
+    while (( size_before != size_after )); do
+        size_before="${#s}"
+        s="${s#[[:space:]]}"
+        s="${s%[[:space:]]}"
+        size_after="${#s}"
+    done
+
+    echo "$s"
+
+    return 0
+}
+
+__trim_string_balanced() {
+    if (( $# != 2 )); then
+    	__error "__trim_string_balanced"
+    	__exit_failsafe
+        return 1     ###
+    fi
+
+    local s="$1"
+    local c="$2"
+    # Remove the same number of " from both left and right (minimal possible)
+    while [[ $s == "$c"*"$c" && ${s: -1} == "$c" ]]; do
+        s="${s#"$c"}"   # remove one " from left
+        s="${s%"$c"}"   # remove one " from right
+    done
+
+    echo "$s"
+}
+
+function __set_script_path() # @source: https://stackoverflow.com/questions/59895/how-do-i-get-the-directory-where-a-bash-script-is-located-from-within-the-script
+{
+	local former_directory
+	former_directory="$(pwd)"
+
+	local source="${BASH_SOURCE[-1]}"
+	while [[ -L "$source" ]]; do # resolve $source until the file is no longer a symlink
+		local directory
+		directory="$(cd -P "$(dirname -- "$source")" > "/dev/null" 2>&1 && pwd)"
+		source="$(readlink -- "$source")"
+		[[ "$source" != /* ]] && source="$directory/$source" # if $source was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+	done
+
+	__script_path="$(cd -P "$(dirname -- "$source")/../" > "/dev/null" 2>&1 && pwd)"
+	cd -- "$former_directory" || exit 1
+
+	export __script_path
+}
+
+
+
+
+
+
+
+
+
+#function __reset_colors() { # @source: https://github.com/MitMaro/server-rsync-backup
+#exit
+#	declare -g __COLOR_RESET=''
+#	declare -g __COLOR_LOG_DATE=''
+#	declare -g __COLOR_HIGHLIGHT=''
+#	declare -g __COLOR_INFO=''
+#	declare -g __COLOR_VERBOSE=''
+#	declare -g __COLOR_WARNING=''
+#	declare -g __COLOR_ERROR=''
+#}
+#
+#function __enable_colored_messages() { # @source: https://github.com/MitMaro/server-rsync-backup
+#	#__reset_colors
+#
+#	if [ -x "/usr/bin/tput" ] && tput setaf 1 >&"/dev/null"; then
+#		__COLOR_RESET="\033[0m"
+#		__COLOR_LOG_DATE="\033[0;36m"
+#		__COLOR_HIGHLIGHT="\033[1;34m"
+#		__COLOR_INFO="\033[0;32m"
+#		__COLOR_VERBOSE="\033[0;36m"
+#		__COLOR_WARNING="\033[1;33m"
+#		__COLOR_ERROR="\033[0;31m"
+#	fi
+#}
+
+
+
+
+
+
+
+
+
+
+
+function __message() { # @source: https://github.com/MitMaro/server-rsync-backup
+	echo -e "[${__COLOR_LOG_DATE}$(date '+%d.%m.%Y %H:%M:%S')${__COLOR_RESET}] $*"
+}
+
+function __error() { # @source: https://github.com/MitMaro/server-rsync-backup
+	# use error code provided if set, else last commands error code
+	# local last_exit_code=${2-$?}
+	printf_format_string="${1:-}"
+	shift ||__expression_may_fail
+
+	__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+
+	>&2 __message "${__COLOR_ERROR}[ERROR]${__COLOR_RESET} $(printf -- "$printf_format_string" "$@")"
+	>&2 echo
+
+	exit 140
+}
+
+function __exit_failsafe() {
+	exit 140
+}
+
+function __heading() { # @source: https://github.com/MitMaro/server-rsync-backup
+	printf_format_string="$1"
+	shift ||__expression_may_fail
+
+	local line_maximum_length
+	line_maximum_length=80
+
+	local text
+	text="$(printf -- "$printf_format_string" "$@")"
+
+	local text_without_codes
+	text_without_codes="$(echo "$text" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2};?)?)?[mGK]//g" )"
+
+	local text_length
+	text_length="${#text_without_codes}"
+
+	local heading="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+	local text_content_length
+	text_content_length=$(((26*2)-1+text_length))
+
+	local overlap
+	overlap=$((text_content_length-line_maximum_length))
+
+	for ((i=text_content_length+2; i < line_maximum_length; i+=2)); do # too narrow
+		text=" $text "
+	done
+	(($((text_content_length%2)) == 0)) && text="$text "
+
+	if (( overlap > 0)); then # oversize, increase overall heading lines
+		text=" $text "
+		for ((i=overlap+2; i >= 0; i-=2)); do
+			heading="━$heading━"
+		done
+	fi
+
+	__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+	echo -e "${__COLOR_HEADING}\n$heading\n  ─━═══════════════════━─ $text ─━═══════════════════━─  \n$heading\n${__COLOR_RESET}"
+}
+
+function __warn() { # @source: https://github.com/MitMaro/server-rsync-backup
+	printf_format_string="${1:-}"
+	shift ||__expression_may_fail
+
+	__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+
+	if [[ -z "$printf_format_string" ]]; then
+		echo
+	else
+		__message "${__COLOR_WARNING}[WARNING]${__COLOR_RESET} $(printf -- "$printf_format_string" "$@")"
+	fi
+}
+
+shopt -s expand_aliases
+alias __debug='__debug_ --file="${BASH_SOURCE[0]}"'
+
+function __debug_() { # @source: https://github.com/MitMaro/server-rsync-backup
+	local file=""
+
+	local n=$#
+	local i=0
+	while ((i < n )); do
+    	if [[ "$1" =~ ^--file.* ]]; then
+    		file="$(basename -- "${1:7}")"
+    		shift ||__expression_may_fail
+    		break
+    	fi
+
+    	(( i++ )) ||__expression_may_fail
+    done
+
+	printf_format_string="${1:-}"
+	shift ||__expression_may_fail
+
+	if [[ -n "$printf_format_string" && -n "$file" ]]; then
+		printf_format_string="[%s] $printf_format_string"
+		set -- "__$file" "$@"
+	fi
+
+	if $__debug; then
+		__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+		if [[ -z "$printf_format_string" ]]; then
+			echo
+		else
+			__message "${__COLOR_DEBUG}[DEBUG]${__COLOR_RESET} $(printf -- "$printf_format_string" "$@")"
+		fi
+	fi
+}
+
+function __verbose() { # @source: https://github.com/MitMaro/server-rsync-backup
+	printf_format_string="${1:-}"
+	shift ||__expression_may_fail
+
+	if $__verbose; then
+		__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+
+		__message "${__COLOR_VERBOSE}[VERBOSE]${__COLOR_RESET} $(printf -- "$printf_format_string" "$@")"
+	fi
+}
+
+function __info() { # @source: https://github.com/MitMaro/server-rsync-backup
+	printf_format_string="${1:-}"
+	shift ||__expression_may_fail
+
+	__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+
+	if ! $__quiet; then
+		if [[ -z "$printf_format_string" ]]; then
+			echo
+		else
+			__message "${__COLOR_INFO}[INFO]${__COLOR_RESET}" "$(printf -- "$printf_format_string" "$@")"
+		fi
+	fi
+}
+
+function __log() { # @source: https://github.com/MitMaro/server-rsync-backup
+	printf_format_string="${1:-}"
+	shift ||__expression_may_fail
+
+	__highlight_arguments "$@" && set -- "${__function_arguments[@]}"
+
+	if [[ -z "$printf_format_string" ]]; then
+		echo
+	else
+		__message "${__COLOR_LOG}[LOG]${__COLOR_RESET} $(printf -- "$printf_format_string" "$@")"
+	fi
+}
+
+function __highlight_arguments() {
+	__function_arguments=( )
+	for argument in "$@"; do
+		if [[ "${argument:0:2}" == "__" ]]; then
+			__function_arguments+=("$(__highlight "${argument:2}")")
+		elif [[ "${argument:0:1}" == "_" ]]; then
+			__function_arguments+=("${argument:1}")
+		else
+			__function_arguments+=("$(__highlight "'$argument'")")
+		fi
+	done
+}
+
+function __highlight() { # @source: https://github.com/MitMaro/server-rsync-backup
+	if [[ -z "$__COLOR_HIGHLIGHT" ]]; then
+		echo "\`$*\`"
+	else
+		echo "${__COLOR_HIGHLIGHT}$*${__COLOR_RESET}"
+	fi
+}
+
+function __usage_example() { # @source: https://github.com/MitMaro/server-rsync-backup
+	if (( $# > 0 )); then
+		contents="$1"
+		echo "$contents"
+		echo -e
+	else
+		echo -e
+		echo -e "rsync backup"
+		echo -e
+		echo -e "Usage: $0 [options] <path-to-config-root>"
+		echo -e
+		echo -e "Options:"
+		echo -e "  $(__highlight "--id <id>")         Only sync files for provided id."
+		echo -e
+		echo -e "  $(__highlight "--verbose, -v")     Show more verbose output of actions performed."
+		echo -e
+		echo -e "  $(__highlight "--no-color")        Disable colored output."
+		echo -e
+		echo -e "  $(__highlight "--dry-run")         Run rsync in dry run mode. Providing this options also assumes $(__highlight "--verbose")."
+		echo -e
+		echo -e "  $(__highlight "--help")            Show this usage message and exit."
+		echo -e
+	fi
+}
+
+function __set_title() {
+  echo -ne "\e]0;"
+  echo -n "$@"
+  echo -ne "\a"
+}
+
+function __set_tab_stops() {
+	tab_width="$1"
+	terminal_width="$( stty size | awk '{print $2}' )"
+
+	set_tab_stops() {
+		local tab_width=$1 terminal_width=$2 tab_stops=''
+
+		for (( i=1+tab_width; i<terminal_width; i+=tab_width )); do
+			tab_stops+=$i','
+		done
+
+		tabs $tab_stops
+	}
+
+	set_tab_stops "$tab_width" "$terminal_width"
+}
+
+function __press_any_key_to_continue() {
+  read -n 1 -s -r -p "Press any key to continue…" "__pressed_key" ||__expression_may_fail
+  echo
+}
+
+function __press_some_key_to_continue() {
+  read -n 1 -s -r -p "Press the '$1' key to continue…" "__pressed_key" ||__expression_may_fail
+  echo
+}

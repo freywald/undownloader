@@ -1,0 +1,59 @@
+#!/bin/bash
+
+formatters=(
+	"Playlists/{{channel|uploader_id|uploader}}/{{playlist_title|playlist|'Unknown Playlist'}}{{ (:release_year:)| (:release_date:)|?}}/{{playlist_index%03d}}. {{title}}{{ (uploaded at :upload_date?:)}} [{{id}}].{{file_extension}}"
+
+    "Albums/{{composer}} • {{artist}}/{{album}}{{ (:release_year:)| (:release_date:)|?}}/{{:track_number%03d:. |?}}{{title}}{{ (uploaded at :upload_date?:)}} [{{id}}].{{file_extension}}"
+	"Albums/{{artist|album_artist}}/{{album}}{{ (:release_year:)| (:release_date:)|?}}/{{:track_number%03d:. |?}}{{title}}{{ (uploaded at :upload_date?:)}} [{{id}}].{{file_extension}}"
+
+	"Channel/{{channel|uploader_id|uploader}}/{{title}}{{ (uploaded at :upload_date?:)}} [{{id}}].{{file_extension}}"
+
+	"Domain/{{webpage_url_domain}}/{{:title?: }}[{{id}}]/{{id}}.{{file_extension}}" # Fallback
+)
+
+archive_on_update=false
+
+field_format__upload_date() {
+    local input="$1"
+    [[ -z "$input" ]] && { echo ""; return; }
+
+    local date_str=""
+
+    # Case 1: YYYYMMDD (most common from yt-dlp)
+    if [[ "$input" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})$ ]]; then
+        date_str="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+    # Case 2: Unix timestamp (seconds)
+    elif [[ "$input" =~ ^[0-9]{1,10}$ ]]; then
+        date_str="@$input"
+    # Case 3: Already ISO-like or other formats - pass through to date
+    else
+        date_str="$input"
+    fi
+
+    # Convert to desired format
+    date -d "$date_str" '+%d.%m.%Y' 2>"/dev/null" || echo "$input"
+}
+
+field_format__title() {
+    local input="$1"
+    [[ -z "$input" ]] && { echo ""; return; }
+
+    input="${input//" - "/" • "}"
+    input="${input//" – "/" • "}"
+    input="${input//": "/" • "}"
+    input="${input//"："/" • "}"
+    echo "$input"
+}
+
+view_sanitize() {
+    local input="$1"
+
+    if $target_filesystem_is_linux; then
+        # Linux only: remove truly illegal characters
+        echo "$input" | tr -d '/\0'
+    else
+        # Windows compatibility
+        echo "$input" | tr -d '\\/:*?"<>|'
+    fi
+}
+

@@ -4,6 +4,8 @@ A frontend for yt-dlp – for you and me.
 
 <br/>
 
+# This documentation is seriously outdated!
+
 Exemplary, a typical – non-atypical – use case:
 
 > I had no clue I have a playlist on YouTube.
@@ -104,7 +106,7 @@ Each queue references a template file which defines the queue instance.
 
 **extract of 'audio.template'**
 ```bash
-__download_with_configuration 
+__configure_download 
 # run the program yt-dlp with these options:…
 yt-dlp
 `# quality and file format` \
@@ -115,7 +117,7 @@ yt-dlp
 --convert-thumbnails png \
 --embed-thumbnail \
 `# subtitles` \
---sub-lang en \
+--sub-lang "en.*" \
 --write-auto-subs \
 --write-sub \
 --convert-subs srt \
