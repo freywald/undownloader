@@ -8,3 +8,4 @@ configuration/defaults_ju
 /var/template-instances/*
 .idea
 /library/FORCE_EXTERNAL_LIBRARY
+/archive
