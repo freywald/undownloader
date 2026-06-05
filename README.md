@@ -4,8 +4,6 @@ A frontend for yt-dlp – for you and me.
 
 <br/>
 
-# This documentation is seriously outdated!
-
 Exemplary, a typical – non-atypical – use case:
 
 > I had no clue I have a playlist on YouTube.
@@ -16,6 +14,11 @@ Exemplary, a typical – non-atypical – use case:
 > I got kind of discouraged so I had created a playlist of pop songs.
 >
 &mdash; <cite><i>the other one</i></cite>
+
+### This documentation is seriously outdated!
+<br/>
+<br/>
+<br/>
 
 ## Add links to a specific processing queue via console aliases/shortcuts
 
@@ -117,7 +120,7 @@ yt-dlp
 --convert-thumbnails png \
 --embed-thumbnail \
 `# subtitles` \
---sub-lang "en.*" \
+--sub-lang "en-en,en-US,en-orig" \
 --write-auto-subs \
 --write-sub \
 --convert-subs srt \

@@ -18,8 +18,8 @@ yt-dlp \
 --console-title --progress --newline \
 `# output file template` \
 --parse-metadata "description:(?s)(?P<meta_comment>.+)" \
--o "%(webpage_url_domain)s/video/%(channel_id|uploader_id)s/%(id)s/%(id)s.%(ext)s" \
--o "%(webpage_url_domain)s/video/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/video/%(channel_id|uploader_id)s/%(id:0:2)s/%(id:2:2)s/%(id:4:2)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/video/%(id:0:2)s/%(id:2:2)s/%(id:4:2)s/%(id)s/%(id)s.%(ext)s" \
 -o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(id)s.%(ext)s" \
 -o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
 -o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
@@ -32,7 +32,7 @@ yt-dlp \
 --convert-thumbnails png \
 --embed-thumbnail \
 `# subtitles` \
---sub-lang "en.*" \
+--sub-lang "en-en,en-US,en-orig" \
 --write-auto-subs \
 --write-sub \
 --convert-subs srt \

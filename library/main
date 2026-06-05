@@ -20,6 +20,43 @@ source -- "$__script_path/configuration/defaults" || exit 1
 
 base_directory="${default_target_directory:?}"
 
+function sanitize_url() {
+    local url="$1"
+
+    # Remove any leading/trailing whitespace
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%"${url##*[![:space:]]}"}"
+
+    # Force https://
+    url="${url#http://}"
+    url="${url#https://}"
+    url="https://${url}"
+
+    # Remove common subdomains (www, m, music, studio, etc.)
+    url="${url//https:\/\/www./https:\/\/}"
+    url="${url//https:\/\/m./https:\/\/}"
+    url="${url//https:\/\/music./https:\/\/}"
+    url="${url//https:\/\/studio./https:\/\/}"
+
+    # Convert youtu.be short links to full youtube.com format
+    if [[ "$url" =~ ^https://youtu\.be/([a-zA-Z0-9_-]+) ]]; then
+        url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
+    fi
+
+    # Clean up common query parameters and convert to clean /watch?v= format
+    # This handles: ?v=ID, ?app=desktop&v=ID, ?feature=...&v=ID, etc.
+    if [[ "$url" =~ ^https://youtube\.com/watch\?.*v=([a-zA-Z0-9_-]+) ]]; then
+        url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
+    fi
+
+    url="${url%%/}"
+    while [[ "$url" == */ ]]; do
+        url="${url%/}"
+    done
+
+    echo "$url"
+}
+
 function handle_source_selector(){
 	local file_selector="$1"
 	local view_name="${2:-}"
@@ -125,7 +162,7 @@ function handle_youtube_url(){
 		return 1
 	fi
 
-	local fast="--sleep-requests 0 --sleep-interval 0"
+	local fast="--sleep-requests 1 --sleep-interval 1"
 	local video
 	local video_cache="$cache_directory/videos/$video_id.txt"
 	local video_id channel_id

@@ -67,7 +67,14 @@ function handle_line() {
     local arguments="${line%%"$separator"*}"
     local parameter_url="${line#*"$separator"}"
 
-	if [[ "$parameter_url" =~ ^(https?://)?(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
+	parameter_url_unsanitized="$parameter_url"
+	parameter_url="$(sanitize_url "$parameter_url")"
+	if [[ "$parameter_url_unsanitized" != "$parameter_url" ]]; then
+		__info "url un-sanatized %s" "$parameter_url_unsanitized"
+		__info "url sanatized %s" "$parameter_url"
+	fi
+
+	if [[ "$parameter_url" =~ ^(https://)(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
 		__info "try to get a playlist url for youtube %s" "$parameter_url"
 
 		local new_video_url

@@ -32,8 +32,7 @@ i=0
 while (( i<len )); do
 	case "${parsed_options[i]}" in
 		--run)
-			:
-			;;
+			:;;
 		--view)
 			run_view=true
 			;;
@@ -83,8 +82,6 @@ while (( i<len )); do
 				__error "--target-directory must have a value."
 				local_exit_failsafe
 			fi
-			#mkdir --parents -- "$target_directory/"
-			#base_directory="$target_directory"
 			((i++))||__expression_may_fail
 			;;
 		--)
@@ -439,9 +436,11 @@ function run_queue() {
 				fi
 			done
 
-			z=$((${#reversed_data_bag[@]}-1))||__expression_may_fail
+			local z
+			z="$((${#reversed_data_bag[@]}-1))" ||__expression_may_fail
 			url_cursor="$z"
-			if (( url_cursor <0 )); then
+
+			if (( url_cursor < 0 )); then
 				echo>&2 "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO NARROW AT DATA ROW $((data_items_processed-data_items_ignored))"
 				exit 1
 			fi
@@ -472,7 +471,7 @@ function run_queue() {
 
 			if $force_download; then
 				mkdir --parents "archive" || exit 1
-				queue_parameters+=("--download-archive=$download_archive")
+				queue_parameters+=("--download-archive=$download_archive") # yt-dlp-specific
 			fi
 			if $__verbose; then
 				queue_parameters+=("--no-quiet" "--verbose") # yt-dlp-specific
@@ -480,17 +479,14 @@ function run_queue() {
 			if $__debug; then
 				queue_parameters+=("--no-quiet" "--verbose") # yt-dlp-specific
 			fi
-			if $ban_evasion; then # yt-dlp-specific
-				queue_parameters+=("--sleep-requests" "2.25" "--min-sleep-interval" "3" "--max-sleep-interval" "13" "--retry-sleep" "fragment:12" "--no-cookies")
+			if $ban_evasion; then
+				queue_parameters+=("--sleep-subtitles" "5" "--sleep-requests" "0.75" "--min-sleep-interval" "10" "--max-sleep-interval" "20" "--retry-sleep" "fragment:12" "--no-cookies") # yt-dlp-specific
 			fi
-			if $scrape_comments; then # yt-dlp-specific
-				queue_parameters+=("--write-comments")
+			if $scrape_comments; then
+				queue_parameters+=("--write-comments") # yt-dlp-specific
 			fi
-			#if [[ -n "$target_directory" ]]; then
-			#	queue_parameters+=("--paths=$download_directory") # yt-dlp-specific
-			#else
-				queue_parameters+=("--paths=$download_directory") # yt-dlp-specific
-			#fi
+
+			queue_parameters+=("--paths=$download_directory") # yt-dlp-specific
 
 			queue_parameters+=("${base_configuration[@]}")
 
