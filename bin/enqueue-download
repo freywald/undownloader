@@ -66,6 +66,14 @@ function handle_line() {
 
     url_changed=false
 
+	local unit_name
+	unit_name="$(basename -- "$queue_name")"
+	unit_name="${queue_name%%-*}"
+
+	local failed_file_log
+	failed_file_log="../$unit_name.failed"
+	failed_file_log="$(realpath --quiet -- "$PWD/$failed_file_log")"
+
     local arguments="${line%%"$separator"*}"
     local parameter_url="${line#*"$separator"}"
 
@@ -91,8 +99,10 @@ function handle_line() {
 				fi
 			fi
 		else
-			__error "handle_youtube_url error for url %s" "$parameter_url"
-			local_exit_failsafe
+			__warn "handle_youtube_url error for url %s" "$parameter_url"
+
+			echo "$parameter_url_unsanitized" >> "$failed_file_log"
+			return
 		fi
 	else
 		__info "%s is not a youtube link" "$parameter_url"

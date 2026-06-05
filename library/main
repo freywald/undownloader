@@ -12,7 +12,7 @@ forget_downloads=false
 target_directory=""
 from_sources_file=""
 default_queues=()
-link_known_fail_list_full_file_path=""
+failed_file_log=""
 queue_failed_items_log_file=""
 __regular_expression__configuration_matches=""
 
@@ -167,14 +167,16 @@ function handle_youtube_url(){
     local v1="${video_id:0:2}"
     local v2="${video_id:2:2}"
     local v3="${video_id:4:2}"
+    local v4="${video_id:6:2}"
+    local v5="${video_id:8:2}"
     local video_cache
-    video_cache="$cache_directory/videos/${v1}/${v2}/${v3}/${video_id}.txt"
+    video_cache="$cache_directory/videos/${v1}/${v2}/${v3}/${v4}/${v5}/${video_id}.txt"
 	local video_id channel_id
 	if [[ ! -f "$video_cache" ]]; then
 		video="$(yt-dlp $fast --dump-single-json --simulate --no-download-archive --no-warnings -- "$video_url" 2>"/dev/null")"
 
-		video_id="$(jq -r '.id' <<< "$video")"
-		channel_id="$(jq -r '.channel_id' <<< "$video")"
+		video_id="$(jq -r '.id // ""' <<< "$video")"
+		channel_id="$(jq -r '.channel_id // ""' <<< "$video")"
 
 		if [[ -z "$channel_id" || -z "$video_id" ]]; then
 			return 1
@@ -189,11 +191,13 @@ function handle_youtube_url(){
 	fi
 
 	local playlists
-    local c1="${channel_id:0:2}"
-    local c2="${channel_id:2:2}"
-    local c3="${channel_id:4:2}"
+    local c1="${channel_id:2:2}"
+    local c2="${channel_id:4:2}"
+    local c3="${channel_id:6:2}"
+    local c4="${channel_id:8:2}"
+    local c5="${channel_id:10:2}"
 	local playlists_cache
-    playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${channel_id}.txt"
+    playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${c4}/${c5}/${channel_id}.txt"
 	if [[ ! -f "$playlists_cache" ]]; then
 		playlists="$(yt-dlp $fast --flat-playlist --print "%(id)s" -- "https://www.youtube.com/channel/${channel_id}/playlists" 2>"/dev/null")"
 		mkdir --parents "$(dirname -- "$playlists_cache")" || exit 1
@@ -209,10 +213,12 @@ function handle_youtube_url(){
 		[[ -z "$playlist_id" ]] && continue
 
 		local playlist_data
-        local p1="${channel_id:0:2}"
-        local p2="${channel_id:2:2}"
-        local p3="${channel_id:4:2}"
-        playlist_cache="$cache_directory/playlists/${p1}/${p2}/${p3}/${channel_id}/${playlist_id}.txt"
+        local p1="${channel_id:2:2}"
+        local p2="${channel_id:4:2}"
+        local p3="${channel_id:6:2}"
+        local p4="${channel_id:8:2}"
+        local p5="${channel_id:10:2}"
+        playlist_cache="$cache_directory/playlists/${p1}/${p2}/${p3}/${p4}/${p5}/${channel_id}/${playlist_id}.txt"
 
 		if [[ ! -f "$playlist_cache" ]]; then
 			playlist_data="$(yt-dlp $fast --flat-playlist --print id -- "https://www.youtube.com/playlist?list=$playlist_id" 2>"/dev/null")"
@@ -222,7 +228,7 @@ function handle_youtube_url(){
 			playlist_data="$(cat -- "$playlist_cache")"
 		fi
 
-		if echo "$playlist_data" | grep -- "^$video_id$" >"/dev/null"; then
+		if echo "$playlist_data" | grep -- "^$video_id$" > "/dev/null"; then
 			found_playlist_id="$playlist_id"
 			break
 		fi

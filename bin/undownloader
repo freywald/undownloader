@@ -48,10 +48,10 @@ while (( i<len )); do
 		--simulate)
 			simulate=true
 			;;
-		--fetch|--update)
+		--fetch)
 			fetch_new_links=true
 			;;
-		--reset)
+		--reset|--update)
 			fetch_new_links=true
 			forget_downloads=true
 			;;
@@ -250,7 +250,7 @@ function list_failed_downloads() {
 		known_to_fail=()
 		echo -e "██  List of failed items:"
 		while IFS= read -r item; do
-			if [[ -f "$link_known_fail_list_full_file_path" ]] && grep -Fxq "$item" "$link_known_fail_list_full_file_path"; then
+			if [[ -f "$failed_file_log" ]] && grep -Fxq "$item" "$failed_file_log"; then
 				known_to_fail+=("$item")
 			else
 				echo -e "██  \t\t\t\t\t\t  • $item"
@@ -611,7 +611,7 @@ function handle_source_list() {
 	cd "$base_directory/" || exit 1
 	mkdir --parents "archive" || exit 1
 
-	link_known_fail_list_full_file_path="$(realpath --quiet -- "${sources_full_file_real_path%.*}.failed")"
+	failed_file_log="$(realpath --quiet -- "$unit_name.failed")"
 
 	queue_template_full_file_path="$__script_path/templates/$template_name.template"
 
