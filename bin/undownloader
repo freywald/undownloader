@@ -37,7 +37,7 @@ while (( i<len )); do
 			run_view=true
 			;;
 		--comments)
-			scrape_comments=true
+			write_comments=true
 			;;
 		--ban-evasion)
 			ban_evasion=true
@@ -482,7 +482,7 @@ function run_queue() {
 			if $ban_evasion; then
 				queue_parameters+=("--sleep-subtitles" "5" "--sleep-requests" "0.75" "--min-sleep-interval" "10" "--max-sleep-interval" "20" "--retry-sleep" "fragment:12" "--no-cookies") # yt-dlp-specific
 			fi
-			if $scrape_comments; then
+			if $write_comments; then
 				queue_parameters+=("--write-comments") # yt-dlp-specific
 			fi
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# AUDIO QUEUE
+# AUDIO CONFIGURATION
 #
 # downloads audio files into an mka container file with thumbnails, subtitles & chapters all embedded
 #
@@ -13,17 +13,17 @@ yt-dlp \
 --live-from-start \
 --no-restrict-filenames \
 --compat-options no-clean-infojson \
---output-na-placeholder "UNKNOWN_PLACEHOLDER" \
+--output-na-placeholder "" \
 `# show progress` \
 --console-title --progress --newline \
 `# output file template` \
 --parse-metadata "description:(?s)(?P<meta_comment>.+)" \
--o "%(webpage_url_domain)s/audio/%(channel_id|uploader_id)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:2)s/%(id.8:2)s/%(id)s/%(id)s.%(ext)s" \
--o "%(webpage_url_domain)s/audio/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:2)s/%(id.8:2)s/%(id)s/%(id)s.%(ext)s" \
--o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id.2:2)s/%(playlist_id.4:2)s/%(playlist_id.6:2)s/%(playlist_id.8:2)s/%(playlist_id.10:2)s/%(playlist_id)s/%(id)s.%(ext)s" \
--o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id.2:2)s/%(playlist_id.4:2)s/%(playlist_id.6:2)s/%(playlist_id.8:2)s/%(playlist_id.10:2)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
--o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id.2:2)s/%(playlist_id.4:2)s/%(playlist_id.6:2)s/%(playlist_id.8:2)s/%(playlist_id.10:2)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
--o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id.2:2)s/%(playlist_id.4:2)s/%(playlist_id.6:2)s/%(playlist_id.8:2)s/%(playlist_id.10:2)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/%(channel_id|uploader_id)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(id)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
 `# quality and file format` \
 --extract-audio \
 --remux mka \
@@ -44,7 +44,6 @@ yt-dlp \
 --write-description \
 --write-info-json \
 --write-playlist-metafiles \
-`#--write-comments` \
 
 __regular_expression_configuration_matches='^.*\.(mka)$'
 
