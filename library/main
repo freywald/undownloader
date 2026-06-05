@@ -180,7 +180,7 @@ function handle_youtube_url(){
 			return 1
 		fi
 
-		mkdir --parents "$(dirname "$video_cache")" || exit 1
+		mkdir --parents "$(dirname -- "$video_cache")" || exit 1
 		echo "$video_id|$channel_id" >| "$video_cache"
 	else
 		video="$(cat -- "$video_cache")"
@@ -196,7 +196,7 @@ function handle_youtube_url(){
     playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${channel_id}.txt"
 	if [[ ! -f "$playlists_cache" ]]; then
 		playlists="$(yt-dlp $fast --flat-playlist --print "%(id)s" -- "https://www.youtube.com/channel/${channel_id}/playlists" 2>"/dev/null")"
-		mkdir --parents "$(dirname "$playlists_cache")" || exit 1
+		mkdir --parents "$(dirname -- "$playlists_cache")" || exit 1
 		echo "$playlists" >| "$playlists_cache"
 	else
 		playlists="$(cat -- "$playlists_cache")"
@@ -216,7 +216,7 @@ function handle_youtube_url(){
 
 		if [[ ! -f "$playlist_cache" ]]; then
 			playlist_data="$(yt-dlp $fast --flat-playlist --print id -- "https://www.youtube.com/playlist?list=$playlist_id" 2>"/dev/null")"
-			mkdir --parents "$(dirname "$playlist_cache")" || exit 1
+			mkdir --parents "$(dirname -- "$playlist_cache")" || exit 1
 			echo "$playlist_data" >| "$playlist_cache"
 		else
 			playlist_data="$(cat -- "$playlist_cache")"
