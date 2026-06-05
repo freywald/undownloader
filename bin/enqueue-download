@@ -72,6 +72,7 @@ function handle_line() {
 	if [[ "$parameter_url_unsanitized" != "$parameter_url" ]]; then
 		__info "url un-sanatized %s" "$parameter_url_unsanitized"
 		__info "url sanatized %s" "$parameter_url"
+		url_changed=true
 	fi
 
 	if [[ "$parameter_url" =~ ^(https://)(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
@@ -80,16 +81,20 @@ function handle_line() {
 		local new_video_url
 		if new_video_url=$(handle_youtube_url "$parameter_url"); then
 			if [[ -n "$new_video_url" ]]; then
-				parameters+=( "\"--metadata-source-url=\\\"$parameter_url\\\"\"" )
+				url_changed=true
+				__info "new video url %s" "$new_video_url"
 				parameter_url="$new_video_url"
-				__info "new video url: %s" "$new_video_url"
 			fi
 		else
-			__error "video %s could not connect" "$parameter_url"
+			__error "handle_youtube_url error for url %s" "$parameter_url"
 			local_exit_failsafe
 		fi
 	else
-		__info "not a youtube link %s" "$parameter_url"
+		__info "%s is not a youtube link" "$parameter_url"
+	fi
+
+	if $url_changed; then
+		parameters+=( "\"--metadata-source-url=\\\"$parameter_url_unsanitized\\\"\"" )
 	fi
 
     if [[ "$parameter_url" != "$arguments" ]]; then
