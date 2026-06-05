@@ -11,19 +11,19 @@ __download_with_configuration \
 `# run yt-dlp with these options:…` \
 yt-dlp \
 --live-from-start \
---windows-filenames \
---output-na-placeholder "UNKNOWN_PLACEHOLDER_DEBUG_REMOVE" \
+--no-restrict-filenames \
+--compat-options no-clean-infojson \
+--output-na-placeholder "" \
 `# show progress` \
 --console-title --progress --newline \
 `# output file template` \
 --parse-metadata "description:(?s)(?P<meta_comment>.+)" \
---parse-metadata "%(title|)s:%(title_with_separator)s" \
---replace-in-metadata "title_with_separator" "\s-\s" " – " \
--o "%(webpage_url_domain.:-4)s/files/%(channel)s%(channel_id& [{}]|)s/%(title_with_separator,title)s%(display_id& [{}]|)s/%(title_with_separator,title|)s.%(ext)s" \
--o "pl_video:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_thumbnail:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_description:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
--o "pl_infojson:%(webpage_url_domain.:-4)s/playlists/%(playlist_title)s%(playlist_id& [{}]|)s/%(title)s.%(ext)s" \
+-o "%(webpage_url_domain)s/%(channel_id|uploader_id)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(id)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
 `# quality and file format` \
 --extract-audio \
 --remux mka \
@@ -32,7 +32,7 @@ yt-dlp \
 --convert-thumbnails png \
 --embed-thumbnail \
 `# subtitles` \
---sub-lang en \
+--sub-lang "en-en,en-US,en-orig" \
 --write-auto-subs \
 --write-sub \
 --convert-subs srt \
@@ -41,5 +41,14 @@ yt-dlp \
 --embed-metadata \
 --embed-info-json \
 --embed-chapters \
+--write-description \
+--write-info-json \
+--write-playlist-metafiles \
 `# this is a playlist download, populate playlist fields` \
 --yes-playlist \
+
+__regular_expression_configuration_matches='^.*\.(mka)$'
+
+__template_name="${BASH_SOURCE[0]}"
+__template_name="$(basename -- "${__template_name%%.*}")"
+

@@ -921,7 +921,7 @@ else
 					fi
 
 					sources_file="${sources_files[reply-1]}"
-					if [[ -n "$view_name" ]]; then
+					if [[ -n "$sources_file" ]]; then
 						 break 2
 					fi
 				fi
@@ -952,7 +952,7 @@ if $update_all_views; then
 
 	for view_file in "${views_files[@]}"; do
 		view_name="$(basename -- "$view_file")"
-		view_name="${view_name%%.*}"
+		view_name="${view_name%.*}"
 		views+=( "$view_name" )
 	done
 else
@@ -971,7 +971,7 @@ else
 		views+=( "$input_view_name" )
 	else
 		view_name="$(basename -- "$sources_file")"
-		view_name="${view_name%%.*}"
+		view_name="${view_name%.*}"
 		views+=( "$view_name" )
 	fi
 fi

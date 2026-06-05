@@ -10,7 +10,6 @@ default_template_name="audio"
 export default_template_name
 
 default_queues=(
-"audio_playlist"
 "video"
 "audio+video"
 "audio"
@@ -25,4 +24,4 @@ export application_var_directory
 base_configuration=("-4" "--no-overwrites" "--no-playlist")
 export base_configuration
 
-default_view_name="full"
+default_view_name="music"

@@ -95,7 +95,7 @@ done
 
 if $run_view; then
 	undownloader-view "$@"
-	exit
+	exit 0
 fi
 
 set -- "${input_parameters[@]}"
@@ -422,13 +422,22 @@ function run_queue() {
 				continue # to collect data items
 			fi
 
+
+
+			for (( i=${#forwarded_parameters[@]}-1; i>=0; i-- )); do
+				local value="${forwarded_parameters[i]}"
+				__debug "forwarded_parameters=$value"
+			done
+
 			data_bag_incomplete=false
 
 			reversed_data_bag=()
 			for (( i=${#data_bag[@]}-1; i>=0; i-- )); do
 				local value="${data_bag[i]}"
+				__debug "data_bag=$value"
 				if $force_download && [[ -f "$queue_name.queue" ]] && [[ "$value" = "--download-archive="* ]]; then
-					: # filter parameter instance '--download-archive' in '--from-sources-file'-mode, so the queue archive index file can be ignored thus '--force' can be enforced properly
+					echo "force_download is active, removing $value"
+					: # filter parameter instance '--download-archive' in '--from-sources-file'-mode, so the queue archive index file can be ignored thus '--force-download' can be enforced properly
 				elif [[ "$value" = "--metadata-"* ]]; then
 					: # filter --metadata
 				else
@@ -464,14 +473,37 @@ function run_queue() {
 		for (( r = 0; r < queue_configuration_options_count; r++)); do
 			wideness="${queue_configuration_options_wideness[r]}"
 
+			local no_download_archive=false
+
+			for queue_configuration_option in "${queue_configuration_options[@]:$cursor:$wideness}"; do
+				__debug "queue_configuration_option=$queue_configuration_option"
+				if [[ "$queue_configuration_option" == "--no-download-archive" ]]; then
+					no_download_archive=true
+				fi
+			done
+
 			queue_parameters=()
 			for queue_configuration_option in "${queue_configuration_options[@]:$cursor:$wideness}"; do
-				queue_parameters+=("$queue_configuration_option")
+				if $no_download_archive && [[ "$queue_configuration_option" = "--download-archive"* ]]; then
+					: # filter parameter instance '--download-archive' when --no-download-archive is used, '--force-download', if enabled, adds its own date-based download archive/memory file a few lines below
+				else
+					queue_parameters+=("$queue_configuration_option")
+				fi
+			done
+
+			current_data_bag=()
+			for queue_configuration_option in "${reversed_data_bag[@]}"; do
+				if $no_download_archive && [[ "$queue_configuration_option" = "--download-archive"* ]]; then
+					: # filter parameter instance '--download-archive' when --no-download-archive is used, '--force-download', if enabled, adds its own date-based download archive/memory file a few lines below
+				else
+					current_data_bag+=("$queue_configuration_option")
+				fi
 			done
 
 			if $force_download; then
 				mkdir --parents "archive" || exit 1
-				queue_parameters+=("--download-archive=$download_archive") # yt-dlp-specific
+				#queue_parameters+=("--download-archive=$download_archive") # yt-dlp-specific
+				queue_parameters+=("--no-download-archive") # yt-dlp-specific
 			fi
 			if $__verbose; then
 				queue_parameters+=("--no-quiet" "--verbose") # yt-dlp-specific
@@ -503,7 +535,7 @@ function run_queue() {
 			$__debug && echo -e "██  \t\t\t\t\t\t\t"
 			$__debug && echo -e "██"
 			$__debug && echo -e "██"
-			$__debug && echo -e "${queue_parameters[*]} ${reversed_data_bag[*]}\n"
+			$__debug && echo -e "${queue_parameters[*]} ${current_data_bag[*]}\n"
 			! $quiet && echo -e "\n"
 
 			return_value=0
@@ -512,7 +544,7 @@ function run_queue() {
 
 				# Executes target program!
 				# The first argument of queue_parameters is the program executable name, see: __configure_download yt-dlp […]
-				"${queue_parameters[@]}" "${reversed_data_bag[@]}" 2> >(tee -a -- "$application_log_file")
+				"${queue_parameters[@]}" "${current_data_bag[@]}" 2> >(tee -a -- "$application_log_file")
 				return_value=$?
 
 				$__debug && set +x
@@ -529,7 +561,7 @@ function run_queue() {
 				! $quiet && echo -e "     \t\t\t\t\t\t\tSUCCESS!"
 				! $quiet && echo -e "\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\n\n\n"
 			fi
-			$__debug && echo "Data bag: ${reversed_data_bag[*]}" >> "$queue_log_file"
+			$__debug && echo "Data bag: ${current_data_bag[*]}" >> "$queue_log_file"
 
 		done
 
@@ -595,7 +627,6 @@ function handle_queue() {
 	mkdir --parents "archive" || exit 1
 
 	download_archive="$base_directory/$queue_name.memory"
-	########force_download=true #to-do debug remove
 
 	$__debug && echo -e "queue file:\n$queue_full_file_path" && cat "$queue_full_file_path" && __press_any_key_to_continue
 
@@ -663,7 +694,10 @@ function handle_source_list() {
 		returned_queue_identifier="${__queue_selector:?}"
 		template_name="${returned_queue_identifier%:*}"
 		queue_full_file_path="${returned_queue_identifier#*:}"
-		force_download=false # disabled, because the generated queue contains another parameter instance of download_archive=, you can't have two or multiple [only the last will be taken].
+
+		# disabled, because the generated queue contains another parameter instance of "download_archive"
+		force_download=false #  so the argument that effectively turns on force_download must be ignored.
+		# you can't have multiple instances – yt-dlp will take only the last one.
 
 		$__debug && echo -e "queue file:\n$queue_full_file_path" && cat "$queue_full_file_path" && __press_any_key_to_continue
 

@@ -90,7 +90,7 @@ function handle_source_selector(){
 		sources_file="$(realpath --quiet -- "$sources_full_file_path")"
 		if [[ -z "$view_name" ]]; then
 			view_name="$(basename -- "$sources_file")"
-			view_name="${view_name%%.*}"
+			view_name="${view_name%.*}"
 		fi
 		base_directory="$(dirname -- "$sources_file")"
 		cd -- "$base_directory" || exit 1

@@ -1,10 +1,15 @@
 #!/bin/bash
 
-# AUDIO+VIDEO CONFIGURATION
+# AUDIO+VIDEO.CONFIGURATION
 #
-# downloads audio and video files into mka/mkv container files with thumbnails, subtitles & chapters all embedded
-#
-#
+# This configuration is dedicated to both video with audio and audio-only extraction in one template.
+# For video content it merges separate video and audio streams and remuxes the result into mkv container.
+# For audio content it extracts audio and remuxes it into mka container.
+# It downloads and embeds thumbnails as png files.
+# It downloads English manual and auto-generated subtitles, converts them to srt format, and embeds them.
+# It embeds full metadata, chapters, and the complete info json into the output file.
+# It writes description text files, info json files, and playlist metafiles.
+# It applies 5-level ID-based directory sharding using the first 10 characters of the media ID.
 
 # CONFIGURATION
 __configure_download \
@@ -14,7 +19,7 @@ yt-dlp \
 --no-restrict-filenames \
 --compat-options no-clean-infojson \
 --output-na-placeholder "" \
-`# only last __configure_download call should use a download archive because the same .memory file is used` \
+`# only last __configure_download call should use a download archive because the same .memory file is used. --no-download-archive will disable all download-archives, except if --force-download is used.` \
 --no-download-archive --quiet \
 `# show progress` \
 --console-title --progress --newline \

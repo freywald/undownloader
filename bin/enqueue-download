@@ -99,7 +99,7 @@ function handle_line() {
 				fi
 			fi
 		else
-			__warn "handle_youtube_url error for url %s" "$parameter_url"
+			__warn "url %s failed!" "$parameter_url"
 
 			echo "$parameter_url_unsanitized" >> "$failed_file_log"
 			return

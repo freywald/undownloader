@@ -1,10 +1,15 @@
 #!/bin/bash
 
-# AUDIO CONFIGURATION
+# AUDIO.CONFIGURATION
 #
-# downloads audio files into an mka container file with thumbnails, subtitles & chapters all embedded
-#
-#
+# This configuration is dedicated to audio-only downloads.
+# It extracts only the audio stream and remuxes it into mka container.
+# It downloads and embeds thumbnails as png files.
+# It downloads English manual and auto-generated subtitles, converts them to srt format, and embeds them.
+# It embeds full metadata, chapters, and the complete info json into the output file.
+# It writes description text files, info json files, and playlist metafiles.
+# It applies 5-level ID-based directory sharding using the first 10 characters of the media ID.
+
 
 # CONFIGURATION
 __configure_download \

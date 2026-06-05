@@ -29,7 +29,7 @@ if [[ -f "$application_var_directory/sources/$sources_file_path.sources" ]]; the
 fi
 
 if [[ ! -f "$sources_file_path" ]]; then
-	__error "sources file '%s' does not exist" "sources_file_path"
+	__error "sources file %s does not exist" "$sources_file_path"
 	__exit_failsafe
 fi
 
