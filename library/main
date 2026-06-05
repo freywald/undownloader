@@ -164,7 +164,11 @@ function handle_youtube_url(){
 
 	local fast="--sleep-requests 1 --sleep-interval 1"
 	local video
-	local video_cache="$cache_directory/videos/$video_id.txt"
+    local v1="${video_id:0:2}"
+    local v2="${video_id:2:2}"
+    local v3="${video_id:4:2}"
+    local video_cache
+    video_cache="$cache_directory/videos/${v1}/${v2}/${v3}/${video_id}.txt"
 	local video_id channel_id
 	if [[ ! -f "$video_cache" ]]; then
 		video="$(yt-dlp $fast --dump-single-json --simulate --no-download-archive --no-warnings -- "$video_url" 2>"/dev/null")"
@@ -175,6 +179,8 @@ function handle_youtube_url(){
 		if [[ -z "$channel_id" || -z "$video_id" ]]; then
 			return 1
 		fi
+
+		mkdir --parents "$(dirname "$video_cache")" || exit 1
 		echo "$video_id|$channel_id" >| "$video_cache"
 	else
 		video="$(cat -- "$video_cache")"
@@ -183,9 +189,14 @@ function handle_youtube_url(){
 	fi
 
 	local playlists
-	local playlists_cache="$cache_directory/channels/$channel_id.txt"
+    local c1="${channel_id:0:2}"
+    local c2="${channel_id:2:2}"
+    local c3="${channel_id:4:2}"
+	local playlists_cache
+    playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${channel_id}.txt"
 	if [[ ! -f "$playlists_cache" ]]; then
 		playlists="$(yt-dlp $fast --flat-playlist --print "%(id)s" -- "https://www.youtube.com/channel/${channel_id}/playlists" 2>"/dev/null")"
+		mkdir --parents "$(dirname "$playlists_cache")" || exit 1
 		echo "$playlists" >| "$playlists_cache"
 	else
 		playlists="$(cat -- "$playlists_cache")"
@@ -198,9 +209,14 @@ function handle_youtube_url(){
 		[[ -z "$playlist_id" ]] && continue
 
 		local playlist_data
-		local playlist_cache="$cache_directory/playlists/${channel_id}–${playlist_id}.txt"
+        local p1="${channel_id:0:2}"
+        local p2="${channel_id:2:2}"
+        local p3="${channel_id:4:2}"
+        playlist_cache="$cache_directory/playlists/${p1}/${p2}/${p3}/${channel_id}/${playlist_id}.txt"
+
 		if [[ ! -f "$playlist_cache" ]]; then
 			playlist_data="$(yt-dlp $fast --flat-playlist --print id -- "https://www.youtube.com/playlist?list=$playlist_id" 2>"/dev/null")"
+			mkdir --parents "$(dirname "$playlist_cache")" || exit 1
 			echo "$playlist_data" >| "$playlist_cache"
 		else
 			playlist_data="$(cat -- "$playlist_cache")"

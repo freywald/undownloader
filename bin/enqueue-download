@@ -64,6 +64,8 @@ function handle_line() {
     local escaped_separator=" --\\"$'\t'
     line="${line//"$escaped_separator"/"$separator"}" #unescape input
 
+    url_changed=false
+
     local arguments="${line%%"$separator"*}"
     local parameter_url="${line#*"$separator"}"
 
@@ -77,13 +79,16 @@ function handle_line() {
 
 	if [[ "$parameter_url" =~ ^(https://)(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
 		__info "try to get a playlist url for youtube %s" "$parameter_url"
-
+		local parameter_url2
+		parameter_url2="$parameter_url"
 		local new_video_url
 		if new_video_url=$(handle_youtube_url "$parameter_url"); then
 			if [[ -n "$new_video_url" ]]; then
 				url_changed=true
-				__info "new video url %s" "$new_video_url"
 				parameter_url="$new_video_url"
+				if [[ "$parameter_url2" != "$parameter_url" ]]; then
+				__info "new video url %s" "$parameter_url"
+				fi
 			fi
 		else
 			__error "handle_youtube_url error for url %s" "$parameter_url"
