@@ -649,28 +649,21 @@ function enqueue_download_from_file()
 	local queue_name="$1"
 	shift ||__expression_may_fail
 
-	local template_name="$1"
-	shift ||__expression_may_fail
-
 	local sources_full_file_real_path="$1"
 	shift ||__expression_may_fail
 
 	local download_index="$1"
 	shift ||__expression_may_fail
 
-	local queue_full_file_path=""
-
-	queue_full_file_path="data/$queue_name-$__current_date.queue"
-	cp -- "$__script_path/templates/$template_name.template" "$queue_full_file_path"
-	queue_full_file_path=":$queue_full_file_path"
-
-	local stop_marker_found=false
-
 	additional_arguments=""
 	$__verbose && additional_arguments="$additional_arguments--verbose "
 	$__debug && additional_arguments="$additional_arguments--debug "
 	$__quiet && additional_arguments="$additional_arguments--quiet "
 
+	queue_full_file_path="data/archive/$queue_name-$__current_date.queue"
+	cp -- "$__script_path/templates/$template_name.template" "$queue_full_file_path"
+
+	local stop_marker_found=false
 	declare -A processed_lines=()
 
 	local url
@@ -692,13 +685,11 @@ function enqueue_download_from_file()
 		processed_lines["$url"]=1
 
 		if $force_download; then
-			enqueue-download $additional_arguments "--download-archive=$download_index" "${template_name}$queue_full_file_path" "$url"
+			enqueue-download $additional_arguments "--download-archive=$download_index" "${template_name}:$queue_full_file_path" "$url"
 		else
-			enqueue-download $additional_arguments "${template_name}$queue_full_file_path" "$url"
+			enqueue-download $additional_arguments "${template_name}:$queue_full_file_path" "$url"
 		fi
 	done < "$sources_full_file_real_path"
-
-	__queue_selector="${template_name}$queue_full_file_path"
 }
 
 function handle_queue() {
@@ -749,7 +740,7 @@ function handle_queue() {
 
 	download_archive="$base_directory/data/$queue_name.memory"
 
-	$__debug && echo -e "queue file:\n$queue_full_file_path" && at -- "$queue_full_file_path" && __press_any_key_to_continue
+	$__debug && echo -e "queue file:\n$queue_full_file_path" && cat -- "$queue_full_file_path" && __press_any_key_to_continue
 
 	run_queue "$queue_name" "$queue_full_file_path"
 }
@@ -801,7 +792,7 @@ function handle_source_list() {
 
 		queue_full_file_path="$(realpath --quiet -- "$local_queue")"
 
-		$__debug && echo -e "queue file:\n$queue_full_file_path" && at -- "$queue_full_file_path" && __press_any_key_to_continue
+		$__debug && echo -e "queue file:\n$queue_full_file_path" && cat -- "$queue_full_file_path" && __press_any_key_to_continue
 
 		run_queue "$queue_name" "$queue_full_file_path"
 	else
@@ -814,19 +805,16 @@ function handle_source_list() {
 
 		echo -e "██  generating queue from:\t\t$sources_file_name\n"
 
-		enqueue_download_from_file --force "$queue_name" "$template_name" "$sources_full_file_real_path" "$download_archive"
+		queue_full_file_path=""
+		enqueue_download_from_file --force "$queue_name" "$sources_full_file_real_path" "$download_archive"
 
 		echo -e "\n\n"
-
-		returned_queue_identifier="${__queue_selector:?}"
-		template_name="${returned_queue_identifier%:*}"
-		queue_full_file_path="${returned_queue_identifier#*:}"
 
 		# disabled, because the generated queue contains another parameter instance of "download_archive"
 		force_download=false #  so the argument that effectively turns on force_download must be ignored.
 		# you can't have multiple instances – yt-dlp will take only the last one.
 
-		$__debug && echo -e "queue file:\n$queue_full_file_path" && at -- "$queue_full_file_path" && __press_any_key_to_continue
+		$__debug && echo -e "queue file:\n$queue_full_file_path" && cat -- "$queue_full_file_path" && __press_any_key_to_continue
 
 		mv -- "$queue_full_file_path" "$local_queue"
 

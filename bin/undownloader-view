@@ -798,7 +798,7 @@ function update_view() {
 		if [[ -f "$view_directory/creation.timestamp" ]]; then
 			view_timestamp="$(stat -c "%Y" -- "$view_directory/creation.timestamp")"
 			if (( "$queue_timestamp" <= "$view_timestamp" )); then
-				__info "view is up to date with queue %s" "$search_directory/data/$queue_name.queue"
+				__info "View is up to date with queue %s" "$search_directory/data/$queue_name.queue"
 				return 0
 			fi
 		fi

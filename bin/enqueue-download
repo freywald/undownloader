@@ -35,7 +35,7 @@ for option in "$@"; do
 done
 
 if [[ -z "$1" ]]; then
-	__error "queue file not given"
+	__error "Queue file not given"
 	__exit_failsafe
 fi
 
@@ -51,7 +51,7 @@ else
 fi
 
 if [[ ! -f "$queue_file" ]]; then
-	__error "queue file '%s' does not exist" "$queue_file"
+	__error "Queue file '%s' does not exist" "$queue_file"
 	__exit_failsafe
 fi
 
@@ -101,20 +101,21 @@ function handle_line() {
 	parameter_url_unsanitized="$parameter_url"
 	parameter_url="$(sanitize_url "$parameter_url")"
 	if [[ "$parameter_url_unsanitized" != "$parameter_url" ]]; then
-		__verbose "url un-sanitized %s" "$parameter_url_unsanitized"
-		__verbose "url sanitized %s" "$parameter_url"
+		__verbose "URL un-sanitized %s" "$parameter_url_unsanitized"
+		__verbose "URL sanitized %s" "$parameter_url"
 		url_changed=true
 	fi
 
-	__info "looking up video url %s in memory file %s" "$parameter_url" "$PWD/data/$unit_name.memory"
+	__info "Video URL %s" "$parameter_url"
+	__verbose "Looking up URL in memory file %s" "$PWD/data/$unit_name.memory"
 
 	if [[ -f "$PWD/data/$unit_name.memory" ]] && is_url_in_memory_file "$parameter_url" "$PWD/data/$unit_name.memory"; then
-		__warn "video skipped url %s because it has previously been downloaded successfully." "$parameter_url"
+		__verbose "URL %s is skipped because it has previously been downloaded successfully." "$parameter_url"
 		return
 	fi
 
 	if [[ "$parameter_url" =~ ^(https://)(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
-		__verbose "try to get a playlist url for youtube %s" "$parameter_url"
+		__verbose "Looking for a playlist URL for the youtube video from the same channel"
 		local parameter_url2
 		parameter_url2="$parameter_url"
 		local new_video_url
@@ -124,14 +125,14 @@ function handle_line() {
 				url_changed=true
 				parameter_url="$new_video_url"
 				if [[ "$parameter_url2" != "$parameter_url" ]]; then
-					__verbose "new video url %s" "$parameter_url"
+					__verbose "New video URL %s" "$parameter_url"
 				fi
 			fi
 		else
-			__warn "url %s failed!" "$parameter_url"
+			__warn "URL %s failed!" "$parameter_url"
 
 			if [[ -f "$known_failed_file_log" ]] && grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null"; then
-				__warn "url %s IS A KNOWN FAIL!" "$parameter_url"
+				__warn "URL %s IS A KNOWN FAIL!" "$parameter_url"
 			fi
 
 			echo "$parameter_url_unsanitized" >> "$current_fails_file_log"
