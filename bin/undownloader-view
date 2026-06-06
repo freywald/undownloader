@@ -16,13 +16,14 @@ update_all_views=false
 
 #__quiet=true
 #__debug=true
+#__verbose=true
 
 for argument in "$@"; do
 	if [[ "$argument" == "--" ]]; then
 		continue
 	fi
 	if [[ "$argument" =~ ^--view ]]; then
-    	#ignore currently it is just there for $run_view to make "undownloader --view" easy
+    	# default action
     	shift ||__expression_may_fail
     	continue
     elif [[ "$argument" =~ ^--update-all ]]; then
@@ -334,7 +335,7 @@ resolve_pattern() {
             				printf_fmt="%0${width}d"
             				__debug "rrrrrrrrrrrr $field_value"
   							field_value="$((10#$field_value))"
-							if (  $is_optional ) && [[ -z "$field_value" ]]; then
+							if ( $is_optional ) && [[ -z "$field_value" ]]; then
 									field_value="0"
 							fi
   							field_value=$(printf "$printf_fmt" "$field_value")
@@ -350,7 +351,7 @@ resolve_pattern() {
             				#	field_value="0"
             				#fi
 
-							if (  $is_optional ) && [[ -z "$field_value" ]]; then
+							if ( $is_optional ) && [[ -z "$field_value" ]]; then
 									field_value="0"
 							fi
 
@@ -440,7 +441,7 @@ resolve_pattern() {
 		fi
 
 		if [[ -n "$printf_fmt" ]]; then
-			if (  $is_optional || $is_literal ) && [[ -z "$value" ]]; then
+			if ( $is_optional || $is_literal ) && [[ -z "$value" ]]; then
 				value="0"
 			fi
 			###########echo "field_spec=$field_spec""
@@ -471,7 +472,7 @@ resolve_pattern() {
 
 		if [[ -n "$printf_fmt" ]]; then
 				__debug "XXXXXXXXX $value"
-				if (  $is_optional || $is_literal ) && [[ -z "$value" ]]; then
+				if ( $is_optional || $is_literal ) && [[ -z "$value" ]]; then
 					value="0"
 				fi
 				value="$((10#$value))"
@@ -482,7 +483,7 @@ resolve_pattern() {
 
 		if [[ -n "$printf_fmt_condition" ]]; then
 			__debug "PPPPP $value"
-			if (  $is_optional ) && [[ -z "$value" ]]; then
+			if ( $is_optional ) && [[ -z "$value" ]]; then
 				value="0"
 			fi
 			value="$((10#$value))"
@@ -497,7 +498,7 @@ resolve_pattern() {
 
 		if [[ -n "$printf_fmt_always" ]]; then
 			__debug "PPPPP $value"
-			if (  $is_optional ) && [[ -z "$value" ]]; then
+			if ( $is_optional ) && [[ -z "$value" ]]; then
 				value="0"
 			fi
 			value="$((10#$value))"
@@ -537,7 +538,7 @@ resolve_pattern() {
 			local cache_key="has_${func_name}"
 
 			__debug "called $func_name"
-			if [[ ! "$(type -t "$func_name")" == "function" ]]; then
+			if [[ "$(type -t "$func_name")" != "function" ]]; then
 				failed=1
 				continue
 			fi
@@ -763,12 +764,14 @@ function update_view() {
 	function __download_urls(){ :; } # the .queue file call these, they just need to exist.
 	function __configure_download(){ :; } # the .queue file call these, they just need to exist.
 
-	if [[ ! -f "$search_directory/$queue_name.queue" ]]; then
+	if [[ ! -f "$search_directory/data/$queue_name.queue" ]]; then
 		__info "run undownloader to download the files first"
-		__error "queue %s not found" "$search_directory/$queue_name.queue"
+		__error "queue %s not found" "$search_directory/data/$queue_name.queue"
 		local_exit_failsafe
 	fi
-	source -- "$search_directory/$queue_name.queue" || exit 1
+	source -- "$search_directory/data/$queue_name.queue" || exit 1
+
+	queue_timestamp="$(stat -c "%Y" -- "$search_directory/data/$queue_name.queue")"
 
 	__debug  "real__template_name=$__template_name"
 	__debug  "real__regular_expression_configuration_matches=$__regular_expression_configuration_matches"
@@ -792,6 +795,14 @@ function update_view() {
 
 	view_directory="$view_name"
 	if [[ -d "$view_directory" ]]; then
+		if [[ -f "$view_directory/creation.timestamp" ]]; then
+			view_timestamp="$(stat -c "%Y" -- "$view_directory/creation.timestamp")"
+			if (( "$queue_timestamp" <= "$view_timestamp" )); then
+				__info "view is up to date with queue %s" "$search_directory/data/$queue_name.queue"
+				return 0
+			fi
+		fi
+
 		if $archive_on_update; then
 			__info "Updating view %s" "$(basename "$view_directory")"
 			mv -- "$view_directory" "$archive_directory/$view_name-$template_name-$__current_date" || echo "Warning: Failed to archive $view_directory"
@@ -807,6 +818,7 @@ function update_view() {
 	validate_formatters
 
 	file_count=0
+	if [[ -d "$search_directory/files" ]]; then
 	while IFS= read -r -d '' file; do
 		__debug
 		__debug
@@ -830,7 +842,7 @@ function update_view() {
 
 		mkdir --parents -- "$target_dir" || exit 1
 
-		__info "Map file %s to %s using %s. formatter" "${file//"$search_directory"/}" "$target_path" "_$formatter_number"
+		__verbose "Map file %s to %s using %s. formatter" "${file//"$search_directory"/}" "$target_path" "_$formatter_number"
 
 		# guarantee unique link names
 		if [[ -e "$target_file" ]]; then
@@ -854,7 +866,8 @@ function update_view() {
 			((file_count++)) ||__expression_may_fail
 		fi
 
-	done < <(find "$search_directory" -type f -regextype posix-extended -iregex "$regex" -print0)
+	done < <(find "$search_directory/files" -type f -regextype posix-extended -iregex "$regex" -print0 ||: )
+	fi
 
 	__info
 	__info "View %s contains %s files." "$view_name" "$file_count"
@@ -869,7 +882,7 @@ function update_view() {
 			echo "# View $view_name"
 			echo
 			echo -ne "Search directory: \t"
-			echo "$PWD/$search_directory"
+			echo "$PWD/$search_directory/files"
 			echo
 			echo -ne "Regex: \t\t\t\t"
 			echo "$regex"
@@ -879,9 +892,10 @@ function update_view() {
 			echo
 			echo -ne "Linux mode: \t\t"
 			echo "$target_filesystem_is_linux"
-		} >| "$view_directory/README.markdown"
+		} >| "$view_directory/README.$view_name.markdown"
 	fi
 
+	echo -n "$queue_timestamp" >| "$view_directory/creation.timestamp"
 }
 
 sources_files=( *".sources" )
@@ -890,7 +904,7 @@ if [[ -n "$input_sources_name" ]]; then
 	if (( ${#sources_files[@]} == 0 )); then
 		input_sources_name_file_extension="${input_sources_name##*.}"
 		global_sources_file="$application_var_directory/sources/$input_sources_name_without_file_extension.sources"
-		if [[ ! $input_sources_name_file_extension == "sources" ]]; then
+		if [[ "$input_sources_name_file_extension" != "sources" ]]; then
 			__error "global sources file %s must be specified with a filename without .sources file extension." "$global_sources_file"
 			local_exit_failsafe
 		fi

@@ -14,11 +14,25 @@ function local_exit_failsafe() { __exit_failsafe; exit 1; }
 source -- "$__script_path/library/main" || exit 1
 source -- "$__script_path/configuration/defaults" || exit 1
 
-force=false
-if [[ "$1" == "--force" ]]; then
-	force=true
-	shift ||__expression_may_fail
-fi
+download_archive=""
+for option in "$@"; do
+	if [[ "$option" =~ "--force" ]]; then
+		force_download=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--quiet" ]]; then
+		__quiet=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--verbose" ]]; then
+		__verbose=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--debug" ]]; then
+		__debug=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--download-archive"* ]]; then
+		download_archive="$1"
+		shift ||__expression_may_fail
+	fi
+done
 
 if [[ -z "$1" ]]; then
 	__error "queue file not given"
@@ -33,7 +47,7 @@ if [[ "$queue_full_file_path" == "$template_name" ]]; then
 else
 	queue_file="$queue_full_file_path"
 	# @fixme verify if given $1 = "axudio:/home/ju/Daten1/var/undownloader/application/queues/foobar_music.queue"
-	# that $template_name axudio is the correct template name for the queue (which it is not, the string is erroneously accepted)
+	# that $template_name axudiozzz is the correct template name for the queue (which it is not, the string is erroneously accepted)
 fi
 
 if [[ ! -f "$queue_file" ]]; then
@@ -68,11 +82,18 @@ function handle_line() {
 
 	local unit_name
 	unit_name="$(basename -- "$queue_name")"
-	unit_name="${queue_name%%-*}"
+	unit_name="${unit_name%%-*}"
+
+	main_directory="$(realpath --canonicalize-missing --quiet -- "$PWD/../")"
 
 	local failed_file_log
-	failed_file_log="../$unit_name.failed"
-	failed_file_log="$(realpath --quiet -- "$PWD/$failed_file_log")"
+	failed_file_log="$main_directory/$unit_name.failed"
+
+	local known_failed_file_log
+	known_failed_file_log="$main_directory/$unit_name.known.failed"
+
+	local current_fails_file_log
+	current_fails_file_log="$main_directory/$unit_name-queue-$__current_date.fails"
 
     local arguments="${line%%"$separator"*}"
     local parameter_url="${line#*"$separator"}"
@@ -80,28 +101,53 @@ function handle_line() {
 	parameter_url_unsanitized="$parameter_url"
 	parameter_url="$(sanitize_url "$parameter_url")"
 	if [[ "$parameter_url_unsanitized" != "$parameter_url" ]]; then
-		__info "url un-sanatized %s" "$parameter_url_unsanitized"
-		__info "url sanatized %s" "$parameter_url"
+		__verbose "url un-sanitized %s" "$parameter_url_unsanitized"
+		__verbose "url sanitized %s" "$parameter_url"
 		url_changed=true
 	fi
 
+	__info "looking up video url %s in memory file %s" "$parameter_url" "$PWD/data/$unit_name.memory"
+
+	if [[ -f "$PWD/data/$unit_name.memory" ]] && is_url_in_memory_file "$parameter_url" "$PWD/data/$unit_name.memory"; then
+		__warn "video skipped url %s because it has previously been downloaded successfully." "$parameter_url"
+		return
+	fi
+
 	if [[ "$parameter_url" =~ ^(https://)(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
-		__info "try to get a playlist url for youtube %s" "$parameter_url"
+		__verbose "try to get a playlist url for youtube %s" "$parameter_url"
 		local parameter_url2
 		parameter_url2="$parameter_url"
 		local new_video_url
-		if new_video_url=$(handle_youtube_url "$parameter_url"); then
+
+		if new_video_url="$(handle_youtube_url "$parameter_url")"; then
 			if [[ -n "$new_video_url" ]]; then
 				url_changed=true
 				parameter_url="$new_video_url"
 				if [[ "$parameter_url2" != "$parameter_url" ]]; then
-				__info "new video url %s" "$parameter_url"
+					__verbose "new video url %s" "$parameter_url"
 				fi
 			fi
 		else
 			__warn "url %s failed!" "$parameter_url"
 
-			echo "$parameter_url_unsanitized" >> "$failed_file_log"
+			if [[ -f "$known_failed_file_log" ]] && grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null"; then
+				__warn "url %s IS A KNOWN FAIL!" "$parameter_url"
+			fi
+
+			echo "$parameter_url_unsanitized" >> "$current_fails_file_log"
+
+			if [[ -f "$known_failed_file_log" && -f "$failed_file_log" ]] && ! grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null" && ! grep --quiet -- "^$parameter_url_unsanitized$" "$failed_file_log" > "/dev/null"; then
+				echo "$parameter_url_unsanitized" >> "$failed_file_log"
+			elif [[ ! -f "$known_failed_file_log" ]]; then
+				if [[ -f "$failed_file_log" ]]; then
+					if ! grep --quiet -- "^$parameter_url_unsanitized$" "$failed_file_log" > "/dev/null"; then
+						echo "$parameter_url_unsanitized" >> "$failed_file_log"
+					fi
+				elif [[ ! -f "$failed_file_log" ]]; then
+					echo "$parameter_url_unsanitized" >> "$failed_file_log"
+				fi
+			fi
+
 			return
 		fi
 	else
@@ -124,11 +170,11 @@ function handle_line() {
 
 	item_count="${#parameters[@]}"
 
-	if ! $force; then
+	if ! $force_download; then
 		line="${parameters[*]}"
 	else
-		line="${parameters[*]} \"--download-archive=archive/$__current_date.memory\""
-		((item_count++))||__expression_may_fail
+		line="${parameters[*]} \"--download-archive=data/archive/$__current_date.memory\""
+		((item_count++)) ||__expression_may_fail
 	fi
 
 	line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items
@@ -141,7 +187,7 @@ function handle_line() {
 	# insert download data below top-most "+ \" insertion marker, but none other if existing
 	sedex="/^+ \\\/{s//+ \\\\\n$line\\\/;:p;n;bp}"
 
-	sed -i "$sedex" "$queue_file" && echo "The url '${parameters[0]}' is appended to queue '$queue_name'."
+	sed -i "$sedex" "$queue_file" && __info "The url %s is appended to queue %s" "${parameters[0]}" "$queue_name"
 
 	# link-muddler-delete-link "${parameters[0]}" #@fixme
 }
@@ -162,7 +208,7 @@ if [[ -z "${1:-}" ]]; then
 	#echo "l=$# a=$*"
 
 		if (( $# > 0 )) && [[ $1 != "" ]]; then
-			handle_line "$@"
+			handle_line "$@" "$download_archive"
 		else
 			line=""
 		fi
@@ -180,6 +226,6 @@ else
 	#echo "4=${4:-?}"
 	#echo "l=$# a=$*"
 
-	handle_line "$@"
+	handle_line "$@" "$download_archive"
 fi
 

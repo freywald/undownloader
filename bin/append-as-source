@@ -59,7 +59,7 @@ if [[ ! -f "$sources_file_path" ]]; then
 fi
 
 sources_file_name="$(basename -- "$sources_file_path")"
-sources_file_name="${sources_file_name%%.*}"
+sources_file_name="${sources_file_name%.*}"
 
 function handle_line() {
 	local parameters=()

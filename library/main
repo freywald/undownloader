@@ -3,59 +3,22 @@
 # defaults
 run_view=false
 force_download=false
-quiet=false
 simulate=false
 ban_evasion=false
 write_comments=false
-fetch_new_links=false
+fetch=false
 forget_downloads=false
 target_directory=""
 from_sources_file=""
 default_queues=()
 failed_file_log=""
+known_to_fail_log=""
 queue_failed_items_log_file=""
 __regular_expression__configuration_matches=""
 
 source -- "$__script_path/configuration/defaults" || exit 1
 
 base_directory="${default_target_directory:?}"
-
-function sanitize_url() {
-    local url="$1"
-
-    # Remove any leading/trailing whitespace
-    url="${url#"${url%%[![:space:]]*}"}"
-    url="${url%"${url##*[![:space:]]}"}"
-
-    # Force https://
-    url="${url#http://}"
-    url="${url#https://}"
-    url="https://${url}"
-
-    # Remove common subdomains (www, m, music, studio, etc.)
-    url="${url//https:\/\/www./https:\/\/}"
-    url="${url//https:\/\/m./https:\/\/}"
-    url="${url//https:\/\/music./https:\/\/}"
-    url="${url//https:\/\/studio./https:\/\/}"
-
-    # Convert youtu.be short links to full youtube.com format
-    if [[ "$url" =~ ^https://youtu\.be/([a-zA-Z0-9_-]+) ]]; then
-        url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
-    fi
-
-    # Clean up common query parameters and convert to clean /watch?v= format
-    # This handles: ?v=ID, ?app=desktop&v=ID, ?feature=...&v=ID, etc.
-    if [[ "$url" =~ ^https://youtube\.com/watch\?.*v=([a-zA-Z0-9_-]+) ]]; then
-        url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
-    fi
-
-    url="${url%%/}"
-    while [[ "$url" == */ ]]; do
-        url="${url%/}"
-    done
-
-    echo "$url"
-}
 
 function handle_source_selector(){
 	local file_selector="$1"
@@ -145,14 +108,149 @@ function handle_source_selector(){
 	__debug "SELECTOR: $file_selector"
 }
 
+function sanitize_url() {
+	local url="$1"
+
+	# Remove any leading/trailing whitespace
+	url="${url#"${url%%[![:space:]]*}"}"
+	url="${url%"${url##*[![:space:]]}"}"
+
+	# Force https://
+	url="${url#http://}"
+	url="${url#https://}"
+	url="https://${url}"
+
+	# Remove common subdomains (www, m, music, studio, etc.)
+	url="${url//https:\/\/www./https:\/\/}"
+	url="${url//https:\/\/m./https:\/\/}"
+	url="${url//https:\/\/music./https:\/\/}"
+	url="${url//https:\/\/studio./https:\/\/}"
+
+	# Convert youtu.be short links to full youtube.com format
+	if [[ "$url" =~ ^https://youtu\.be/([a-zA-Z0-9_-]+) ]]; then
+		url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
+	fi
+
+	# Clean up common query parameters and convert to clean /watch?v= format
+	# This handles: ?v=ID, ?app=desktop&v=ID, ?feature=...&v=ID, etc.
+	if [[ "$url" =~ ^https://youtube\.com/watch\?.*v=([a-zA-Z0-9_-]+) ]]; then
+		url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
+	fi
+
+	url="${url%%/}"
+	while [[ "$url" == */ ]]; do
+		url="${url%/}"
+	done
+
+	echo "$url"
+}
+
+function is_url_in_memory_file(){
+	local video_url="$1"
+	local memory_file="$2"
+
+	if ! cache_file="$(get_video_data_of_url "$video_url" "urls")"; then
+		return 1
+	fi
+
+    mapfile -t lines < "$cache_file"
+
+	local video_id
+
+	local incomplete=false
+	local i=0
+	for line in "${lines[@]}"; do
+		if (( i > 0 )); then # skips channel id at position 0
+			video_id="$line"
+			if ! grep --quiet --extended-regexp -- "^([^\ ]+) ($video_id)$" "$memory_file" > "/dev/null"; then
+				incomplete=true
+			fi
+		fi
+		(( i++ )) ||:
+	done
+
+	$incomplete && return 1
+	return 0
+}
+
+function get_video_data_of_url(){
+	local video_url="$1"
+	local cache_directory_name="$2"
+
+	local cache_directory="$application_var_directory/playlist-cache/"
+	mkdir --parents -- "$cache_directory/$cache_directory_name/" || exit 1
+
+	local encoded_url
+	encoded_url_for_filename=$(echo "$video_url" | tr '/' '_' | tr -d '\0')
+	encoded_url=$(echo "$video_url" | sha1sum | cut --delimiter=' ' -f1)
+
+	if [[ -z "$encoded_url" ]]; then
+		return 1
+	fi
+
+	local length="${#encoded_url}"
+
+	local segment_size
+	if (( length < 10 )); then
+		segment_size=1
+	else
+		segment_size=2
+	fi
+
+	local path=""
+	local level=0
+	local i=0
+	while (( i < length && level < 5 )); do
+		local chunk="${encoded_url:i:segment_size}"
+		if [[ -n "$chunk" ]]; then
+			path="${path}${chunk}/"
+			((level++)) ||:
+		fi
+
+		((i += segment_size)) ||:
+	done
+
+	local cache_file="$cache_directory/$cache_directory_name/${path%/}/${encoded_url_for_filename}.txt"
+
+	local fast="--sleep-requests 0 --sleep-interval 0"
+	local json
+	local video_id channel_id
+
+	if [[ ! -f "$cache_file" ]]; then
+		json="$(yt-dlp $fast --dump-single-json --simulate --no-download-archive --no-warnings --flat-playlist -- "$video_url" 2>"/dev/null")"
+		#echo "$json" >> "$cache_file.json"
+
+        channel_id="$(jq -r '.channel_id // ""' <<< "$json")"
+        local video_ids=()
+        while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                 video_ids+=("$line")
+            fi
+        done < <(jq -r 'if (.entries? | type) == "array" then .entries[].id else .id end // ""' <<< "$json")
+
+		mkdir --parents -- "$(dirname -- "$cache_file")" || exit 1
+        {
+            echo "$channel_id"
+            printf '%s\n' "${video_ids[@]}"
+        } >| "$cache_file"
+	fi
+
+	mapfile -t lines < "$cache_file"
+	if (( ${#lines[@]} < 2 )); then
+		rm -- "$cache_file"
+		return 1
+	fi
+
+	echo "$cache_file"
+}
+
 # returns video URL with &list= appended if exactly one matching playlist is found
 function handle_youtube_url(){
 	local video_url="$1"
 
 	local cache_directory="$application_var_directory/playlist-cache/"
-	mkdir --parents "$cache_directory/videos/" || exit 1
-	mkdir --parents "$cache_directory/channels/" || exit 1
-	mkdir --parents "$cache_directory/playlists/" || exit 1
+	mkdir --parents -- "$cache_directory/channels/" || exit 1
+	mkdir --parents -- "$cache_directory/playlists/" || exit 1
 
 	if [[ "$video_url" =~ v=([a-zA-Z0-9_\-]+) ]]; then
 		video_id="${BASH_REMATCH[1]}"
@@ -161,46 +259,42 @@ function handle_youtube_url(){
 	else
 		return 1
 	fi
+	local fast="--sleep-requests 0 --sleep-interval 0"
 
-	local fast="--sleep-requests 1 --sleep-interval 1"
-	local video
-    local v1="${video_id:0:2}"
-    local v2="${video_id:2:2}"
-    local v3="${video_id:4:2}"
-    local v4="${video_id:6:2}"
-    local v5="${video_id:8:2}"
-    local video_cache
-    video_cache="$cache_directory/videos/${v1}/${v2}/${v3}/${v4}/${v5}/${video_id}.txt"
 	local video_id channel_id
-	if [[ ! -f "$video_cache" ]]; then
-		video="$(yt-dlp $fast --dump-single-json --simulate --no-download-archive --no-warnings -- "$video_url" 2>"/dev/null")"
+	local cache_file
+	if ! cache_file="$(get_video_data_of_url "$video_url" "urls")"; then
+		return 1
+	fi
 
-		video_id="$(jq -r '.id // ""' <<< "$video")"
-		channel_id="$(jq -r '.channel_id // ""' <<< "$video")"
+    mapfile -t lines < "$cache_file"
 
-		if [[ -z "$channel_id" || -z "$video_id" ]]; then
-			return 1
+	local i=0
+	for line in "${lines[@]}"; do
+		if (( i == 0 )); then
+			channel_id="$line"
+		else
+			video_id="$line"
 		fi
+		(( i++ )) ||:
+	done
 
-		mkdir --parents "$(dirname -- "$video_cache")" || exit 1
-		echo "$video_id|$channel_id" >| "$video_cache"
-	else
-		video="$(cat -- "$video_cache")"
-
-		IFS='|' read -r video_id channel_id <<< "$video"
+	if [[ -z "$video_id" || -z "$video_id" ]]; then
+		rm -- "$cache_file"
+		return 1
 	fi
 
 	local playlists
-    local c1="${channel_id:2:2}"
-    local c2="${channel_id:4:2}"
-    local c3="${channel_id:6:2}"
-    local c4="${channel_id:8:2}"
-    local c5="${channel_id:10:2}"
+	local c1="${channel_id:2:2}"
+	local c2="${channel_id:4:2}"
+	local c3="${channel_id:6:2}"
+	local c4="${channel_id:8:2}"
+	local c5="${channel_id:10:2}"
 	local playlists_cache
-    playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${c4}/${c5}/${channel_id}.txt"
+	playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${c4}/${c5}/${channel_id}.txt"
 	if [[ ! -f "$playlists_cache" ]]; then
 		playlists="$(yt-dlp $fast --flat-playlist --print "%(id)s" -- "https://www.youtube.com/channel/${channel_id}/playlists" 2>"/dev/null")"
-		mkdir --parents "$(dirname -- "$playlists_cache")" || exit 1
+		mkdir --parents -- "$(dirname -- "$playlists_cache")" || exit 1
 		echo "$playlists" >| "$playlists_cache"
 	else
 		playlists="$(cat -- "$playlists_cache")"
@@ -213,22 +307,22 @@ function handle_youtube_url(){
 		[[ -z "$playlist_id" ]] && continue
 
 		local playlist_data
-        local p1="${channel_id:2:2}"
-        local p2="${channel_id:4:2}"
-        local p3="${channel_id:6:2}"
-        local p4="${channel_id:8:2}"
-        local p5="${channel_id:10:2}"
-        playlist_cache="$cache_directory/playlists/${p1}/${p2}/${p3}/${p4}/${p5}/${channel_id}/${playlist_id}.txt"
+		local p1="${channel_id:2:2}"
+		local p2="${channel_id:4:2}"
+		local p3="${channel_id:6:2}"
+		local p4="${channel_id:8:2}"
+		local p5="${channel_id:10:2}"
+		playlist_cache="$cache_directory/playlists/${p1}/${p2}/${p3}/${p4}/${p5}/${channel_id}/${playlist_id}.txt"
 
 		if [[ ! -f "$playlist_cache" ]]; then
 			playlist_data="$(yt-dlp $fast --flat-playlist --print id -- "https://www.youtube.com/playlist?list=$playlist_id" 2>"/dev/null")"
-			mkdir --parents "$(dirname -- "$playlist_cache")" || exit 1
+			mkdir --parents -- "$(dirname -- "$playlist_cache")" || exit 1
 			echo "$playlist_data" >| "$playlist_cache"
 		else
 			playlist_data="$(cat -- "$playlist_cache")"
 		fi
 
-		if echo "$playlist_data" | grep -- "^$video_id$" > "/dev/null"; then
+		if echo "$playlist_data" | grep --quiet --fixed-strings --line-regexp -- "$video_id" > "/dev/null"; then
 			found_playlist_id="$playlist_id"
 			break
 		fi

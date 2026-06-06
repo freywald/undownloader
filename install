@@ -18,17 +18,17 @@ trap 'handle_error "$?" "${BASH_COMMAND:-?}" "${FUNCNAME[0]:-main}(${BASH_SOURCE
 sudo apt install moreutils
 
 if [[ ! -e "configuration/defaults" ]]; then
-	cp "configuration/defaults.example" "configuration/defaults"
+	cp -- "configuration/defaults.example" "configuration/defaults"
 fi
 
 source -- "configuration/defaults" || exit 1
 
 if [[ ! -d "$application_var_directory/queues" ]]; then
 	mkdir --parents -- "$application_var_directory/queues"
-	cp "installation/queues-templates/"* "$application_var_directory/queues"
+	cp -- "installation/queues-templates/"* "$application_var_directory/queues"
 fi
 
-mkdir --parents "$HOME/applications"
+mkdir --parents -- "$HOME/applications"
 echo 'source -- "$HOME/applications/undownloader/configuration/aliases"' >> "$HOME/.bash_aliases"
 echo 'PATH="$HOME/applications/undownloader/bin:$PATH"' >> "$HOME/.bashrc"
 

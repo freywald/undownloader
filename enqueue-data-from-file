@@ -22,13 +22,13 @@ eval set -- "$parsed_options"
 
 while true; do
 	case "$1" in
-		-f|--force)
+		--force)
 			force_download=true
-			shift
+			shift ||__expression_may_fail
 			;;
 		--create-from-template)
 			create_from_template=true
-			shift
+			shift ||__expression_may_fail
 			;;
 		--)
 			shift
@@ -53,18 +53,18 @@ else
 fi
 
 queue_name="$1"
-shift
+shift ||__expression_may_fail
 
 list_file_name="$1"
-shift
+shift ||__expression_may_fail
 
 download_index="$1"
-shift
+shift ||__expression_may_fail
 
 current_date="$(date +%Y%m%d%H%M%S)"
 queue_full_file_path=""
 
-if $create_from_template; then
+if $create_from_template; then #@fixme
 	queue_full_file_path="$__script_path/var/template-instances/queue-$queue_name-date-$current_date.queue"
 	cp -- "$__script_path/templates/$queue_name.template" "$queue_full_file_path"
 	queue_full_file_path=":$queue_full_file_path"
