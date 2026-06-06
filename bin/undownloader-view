@@ -53,7 +53,7 @@ done
 __template_name=""
 __regular_expression_configuration_matches=""
 archive_on_update=true
-formatters=("file.{{file_extension}}")
+formatters=("file.{{file_extension}}") # default, does not make much sense to use, that's why it's the default, because you should customize it by using a view
 
 detect_filesystem() {
 	local path="$1"
@@ -772,6 +772,9 @@ function update_view() {
 	__debug  "real__template_name=$__template_name"
 	__debug  "real__regular_expression_configuration_matches=$__regular_expression_configuration_matches"
 
+	view_name="$view_name.$__template_name"
+	__debug "real__view_name=$view_name"
+
 	if [[ -n "$__regular_expression_configuration_matches" ]]; then
 		regex="$__regular_expression_configuration_matches"
 	else
@@ -883,15 +886,21 @@ function update_view() {
 sources_files=( *".sources" )
 
 if [[ -n "$input_sources_name" ]]; then
-	sources_file_name="$input_sources_name"
-
 	if (( ${#sources_files[@]} == 0 )); then
-		sources_file="$application_var_directory/sources/$sources_file_name.sources"
-	elif (( ${#sources_files[@]} == 1 )); then
-		sources_file="$input_sources_name"
+		input_sources_name_file_extension="${input_sources_name##*.}"
+		global_sources_file="$application_var_directory/sources/$input_sources_name_without_file_extension.sources"
+		if [[ ! $input_sources_name_file_extension == "sources" ]]; then
+			__error "global sources file %s must be specified with a filename without .sources file extension." "$global_sources_file"
+			local_exit_failsafe
+		fi
+		if [[ -f "$global_sources_file" ]]; then
+			sources_file="$global_sources_file"
+		else
+			__error "global sources file %s does not exist" "$global_sources_file"
+			local_exit_failsafe
+		fi
 	else
-		__error "multiple *.sources files found."
-		local_exit_failsafe
+		sources_file="$input_sources_name"
 	fi
 
 	if [[ ! -f "$sources_file" ]]; then
@@ -952,7 +961,7 @@ if $update_all_views; then
 
 	for view_file in "${views_files[@]}"; do
 		view_name="$(basename -- "$view_file")"
-		view_name="${view_name%.*}"
+		view_name="${view_name%%.*}"
 		views+=( "$view_name" )
 	done
 else
@@ -971,7 +980,7 @@ else
 		views+=( "$input_view_name" )
 	else
 		view_name="$(basename -- "$sources_file")"
-		view_name="${view_name%.*}"
+		view_name="${view_name%%.*}"
 		views+=( "$view_name" )
 	fi
 fi

@@ -14,6 +14,9 @@ if (( $? != 4 )); then
 	exit 1
 fi
 
+#__quiet=true
+#__debug=true
+
 forwarded_parameters=()
 
 long_options="run,view,force-download,verbose,quiet,debug,simulate,fetch,update,reset,forget-downloads,ban-evasion,comments,from-sources-file::,target-directory::"
@@ -704,7 +707,6 @@ function handle_source_list() {
 		mv -- "$queue_full_file_path" "$local_queue"
 
 		run_queue "$queue_name" "$local_queue"
-
 
 		remote_download_archive="archive/$queue_name.$__current_date.memory"
 
