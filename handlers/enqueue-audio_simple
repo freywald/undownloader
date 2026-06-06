@@ -1,7 +1,0 @@
-#!/bin/bash
-
-source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base" || exit 1
-
-program="$(IFS=- read -r L R <<< "$(basename -- "$0")"; [[ -n "$L" && -n "$R" ]] && printf '%s\n' "$R" ||__expression_may_fail)"
-f="append-as-source" # f="enqueue-download"
-$f ${program:+"$program"} "$@"

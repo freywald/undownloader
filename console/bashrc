@@ -23,7 +23,7 @@ function help() {
 	echo
 
 	ls -1 /home/ju/Daten1/var/undownloader/application/queues/*".queue" | while read file; do if [[ -L "$file" ]]; then \
-		transport=""; \
+		#transport=""; \
 		link="$(dirname -- "$(readlink --canonicalize --no-newline --quiet -- "./$file")")"; \
 		#transport="$(grep -oP -- "--transport=\"(\K[^\"]*)" "$file" 2>"/dev/null")" || transport="rsync";  \
 		echo -e "    \e[37m./\e[1;35m${file%.*} \e[0;37m		\e[37mfrom:\e[34m $link\033[0m"; else echo -e "    \e[37m./\e[1;35m${file%.*}\033[0m"; fi; done

@@ -25,3 +25,5 @@ base_configuration=("-4" "--no-overwrites" "--no-playlist")
 export base_configuration
 
 default_view_name="music"
+
+default_sources_name="music"

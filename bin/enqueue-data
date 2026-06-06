@@ -53,14 +53,14 @@ for line in "${lines[@]}"; do
 			parameters+=( "\"$parameter\"" )
 		done
 
-		item_count=${#parameters[@]}
+		item_count="${#parameters[@]}"
 
 		if ! $force; then
 			line="${parameters[*]}"
 		else
 			current_date="$(date +%Y%m%d%H%M%S)"
 			line="${parameters[*]} --download-archive=$__script_path/var/archive/queue-$queue_name-date-$current_date.index"
-			((item_count++))
+			((item_count++)) ||__expression_may_fail
 		fi
 
 		line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items

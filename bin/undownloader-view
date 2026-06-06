@@ -17,24 +17,25 @@ update_all_views=false
 #__quiet=true
 #__debug=true
 
-for file in "$@"; do
-	if [[ "$file" == "--" ]]; then
+for argument in "$@"; do
+	if [[ "$argument" == "--" ]]; then
 		continue
 	fi
-	if [[ "$file" =~ ^--view ]]; then
+	if [[ "$argument" =~ ^--view ]]; then
     	#ignore currently it is just there for $run_view to make "undownloader --view" easy
     	shift ||__expression_may_fail
     	continue
-    elif [[ "$file" =~ ^--update-all ]]; then
+    elif [[ "$argument" =~ ^--update-all ]]; then
 		update_all_views=true
 		shift ||__expression_may_fail
 		continue
-	elif [[ "$file" =~ ^--.* ]]; then
-		__error "input error %s" "$file"
+	elif [[ "$argument" =~ ^--.* ]]; then
+		__error "input error %s" "$argument"
 		local_exit_failsafe
 	fi
-	file_extension="${file##*.}"
 
+	file="$argument"
+	file_extension="${file##*.}"
 	if [[ "$file_extension" == "sources" ]]; then
 		input_sources_name="$1"
 		shift ||__expression_may_fail

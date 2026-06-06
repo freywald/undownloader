@@ -1,7 +1,0 @@
-#!/bin/bash
-
-source -- "$__script_path/templates/audio_simple.configuration"
-
-__download_urls \
-+ \
-! \

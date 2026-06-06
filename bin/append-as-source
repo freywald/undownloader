@@ -22,7 +22,32 @@ if [[ -z "$1" ]]; then
 	__exit_failsafe
 fi
 
+input_sources_filename=""
+
+if [[ "$1" =~ ^--file* ]]; then
+	input_sources_filename="$2"
+	shift ||__expression_may_fail
+fi
+
 sources_file_path="$1"
+shift ||__expression_may_fail
+
+if [[ -z "$input_sources_filename" ]]; then
+	unit="${1:-}"
+	template_name="${unit%%"#"*}"
+	data="${unit#*"#"}"
+	if [[ "$template_name" == "$data" ]]; then
+		prefix="$default_sources_name"
+		sources_file_path="$sources_file_path"
+	else
+		prefix="$template_name"
+		shift ||__expression_may_fail
+		set -- "$data" "$@"
+	fi
+	sources_file_path="$prefix.$sources_file_path"
+else
+	sources_file_path="$input_sources_filename"
+fi
 
 if [[ -f "$application_var_directory/sources/$sources_file_path.sources" ]]; then
 	sources_file_path="$application_var_directory/sources/$sources_file_path.sources"
@@ -35,7 +60,6 @@ fi
 
 sources_file_name="$(basename -- "$sources_file_path")"
 sources_file_name="${sources_file_name%%.*}"
-shift ||__expression_may_fail
 
 function handle_line() {
 	local parameters=()

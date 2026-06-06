@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#force_target_filesystem_is_linux="true" # "true" = Linux → minimal sanitization or: Windows compatibility mode
+#force_target_filesystem_is_linux="true" # "true" = if true -> minimal filename sanitization
 
 json_fields=(
         # Core identifiers (always recommended)

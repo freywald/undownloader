@@ -17,9 +17,11 @@ fi
 #__quiet=true
 #__debug=true
 
+update_all_sources=false
 forwarded_parameters=()
+given_files=()
 
-long_options="run,view,force-download,verbose,quiet,debug,simulate,fetch,update,reset,forget-downloads,ban-evasion,comments,from-sources-file::,target-directory::"
+long_options="run,view,force-download,verbose,quiet,debug,simulate,fetch,update,reset,forget-downloads,ban-evasion,comments,update-all,from-sources-file::,target-directory::"
 original_program_arguments=("$@")
 
 parsed_options2=$(getopt --options="::" --longoptions="$long_options" --name "$0" -- "$@") ||__expression_may_fail
@@ -38,6 +40,9 @@ while (( i<len )); do
 			:;;
 		--view)
 			run_view=true
+			;;
+		--update-all)
+			update_all_sources=true
 			;;
 		--comments)
 			write_comments=true
@@ -189,7 +194,13 @@ if $__verbose && $quiet; then
 	exit 1
 fi
 
-if (( $# == 0 )); then
+if [[ -n "$from_sources_file" ]]; then
+	given_files+=("$from_sources_file")
+fi
+
+if $update_all_sources; then
+	given_files=( "./"*".sources" )
+elif (( $# == 0 )); then
 	if [[ -z "$from_sources_file" ]]; then
 		routes_files=( "./"*".sources" )
 		if (( ${#routes_files[@]} == 0 )); then
@@ -230,8 +241,7 @@ if (( $# == 0 )); then
 	fi
 
 	if [[ -n "$routes_file" ]]; then
-        from_sources_file="$routes_file"
-
+        given_files+=("$routes_file")
 	fi
 fi
 
@@ -241,7 +251,7 @@ function __configure_download() {
 	# linearized array data with arbitrary wideness
 	queue_configuration_options+=("$@")
 	queue_configuration_options_wideness+=($#)
-	((queue_configuration_options_count++))||__expression_may_fail
+	((queue_configuration_options_count++)) ||__expression_may_fail
 }
 
 function __download_urls() {
@@ -716,10 +726,7 @@ function handle_source_list() {
 	fi
 }
 
-given_files=("$@")
-if [[ -n "$from_sources_file" ]]; then
-	given_files+=("$from_sources_file")
-fi
+given_files+=("$@")
 if (( ${#given_files[@]} == 0 )); then
 	if (( ${#default_queues[@]} != 0 )); then
 		given_files=("${default_queues[@]}")

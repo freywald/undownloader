@@ -4,4 +4,4 @@ source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base" ||
 
 program="$(IFS=- read -r L R <<< "$(basename -- "$0")"; [[ -n "$L" && -n "$R" ]] && printf '%s\n' "$R" ||__expression_may_fail)"
 f="append-as-source" # f="enqueue-download"
-$f ${program:+"$program"} "$@"
+$f --file=${program:+"$program"} "$@"

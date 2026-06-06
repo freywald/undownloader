@@ -12,11 +12,6 @@ Commands:
  
   dv            			enqueue-video
 
-  dap           			enqueue-audio_playlist
-
   dav           			enqueue-audio+video
 
   da            			enqueue-audio
- 
-  das           			enqueue-audio_simple
-
