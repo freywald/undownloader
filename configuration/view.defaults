@@ -22,7 +22,7 @@ json_fields=(
         "upload_date" "release_date" "release_year" "timestamp" "release_timestamp"
 
         # Playlist / Collection
-        "playlist" "playlist_id" "playlist_index" "playlist_title"
+        "playlist" "playlist_id" "playlist_index" "playlist_title" "playlist_scope"
 
         # Stats
         "view_count" "like_count" "comment_count"

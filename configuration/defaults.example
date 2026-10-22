@@ -21,8 +21,17 @@ export default_queues
 application_var_directory="/home/$USER/Daten1/var/undownloader/application"
 export application_var_directory
 
-base_configuration=("-4" "--no-overwrites" "--no-playlist")
-export base_configuration
+base_configuration=("-4" "--no-overwrites" "--cookies" "/home/ju/.config/yt-dlp/cookies-youtube.txt" "--extractor-args" "youtubepot-bgutilscript:server_home=/home/ju/.config/yt-dlp/bgutil-ytdlp-pot-provider/server/")
+
+declare -A base_configuration_site=()
+base_configuration_site["rumble"]='--impersonate=firefox;'
+base_configuration_site["youtube"]=''
+
+declare -A host_match_name=(
+    ['^(([^.]+\.)+)?(youtube\.com|youtu\.be)$']="youtube"
+    ['^(([^.]+\.)+)?rumble\.com$']="rumble"
+    ['^(([^.]+\.)+)?bbc\.co\.uk$']="bbc"
+)
 
 default_view_name="music"
 

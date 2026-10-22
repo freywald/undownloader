@@ -14,50 +14,6 @@ function local_exit_failsafe() { __exit_failsafe; exit 1; }
 source -- "$__script_path/library/main" || exit 1
 source -- "$__script_path/configuration/defaults" || exit 1
 
-download_archive=""
-for option in "$@"; do
-	if [[ "$option" =~ "--force" ]]; then
-		force_download=true
-		shift ||__expression_may_fail
-	elif [[ "$option" =~ "--quiet" ]]; then
-		__quiet=true
-		shift ||__expression_may_fail
-	elif [[ "$option" =~ "--verbose" ]]; then
-		__verbose=true
-		shift ||__expression_may_fail
-	elif [[ "$option" =~ "--debug" ]]; then
-		__debug=true
-		shift ||__expression_may_fail
-	elif [[ "$option" =~ "--download-archive"* ]]; then
-		download_archive="$1"
-		shift ||__expression_may_fail
-	fi
-done
-
-if [[ -z "$1" ]]; then
-	__error "Queue file not given"
-	__exit_failsafe
-fi
-
-template_name="${1%:*}"
-queue_full_file_path="${1#*:}"
-
-if [[ "$queue_full_file_path" == "$template_name" ]]; then
-	queue_file="$application_var_directory/queues/$template_name.queue"
-else
-	queue_file="$queue_full_file_path"
-	# @fixme verify if given $1 = "axudio:/home/ju/Daten1/var/undownloader/application/queues/foobar_music.queue"
-	# that $template_name axudiozzz is the correct template name for the queue (which it is not, the string is erroneously accepted)
-fi
-
-if [[ ! -f "$queue_file" ]]; then
-	__error "Queue file '%s' does not exist" "$queue_file"
-	__exit_failsafe
-fi
-
-queue_name="$queue_full_file_path"
-shift ||__expression_may_fail
-
 function handle_line() {
 	local parameters=()
 
@@ -86,20 +42,26 @@ function handle_line() {
 
 	main_directory="$(realpath --canonicalize-missing --quiet -- "$PWD/../")"
 
-	local failed_file_log
 	failed_file_log="$main_directory/$unit_name.failed"
 
-	local known_failed_file_log
 	known_failed_file_log="$main_directory/$unit_name.known.failed"
 
-	local current_fails_file_log
 	current_fails_file_log="$main_directory/$unit_name-queue-$__current_date.fails"
 
     local arguments="${line%%"$separator"*}"
     local parameter_url="${line#*"$separator"}"
+    local possibly_original_playlist_id=""
 
-	parameter_url_unsanitized="$parameter_url"
-	parameter_url="$(sanitize_url "$parameter_url")"
+    if [[ "$parameter_url" == "$arguments" ]]; then
+    	arguments=""
+    fi
+
+	local parameter_url_unsanitized="$parameter_url"
+	{
+		read -r parameter_url
+		read -r possibly_original_playlist_id
+	} < <(sanitize_url "$parameter_url")
+
 	if [[ "$parameter_url_unsanitized" != "$parameter_url" ]]; then
 		__verbose "URL un-sanitized %s" "$parameter_url_unsanitized"
 		__verbose "URL sanitized %s" "$parameter_url"
@@ -109,93 +71,188 @@ function handle_line() {
 	__info "Video URL %s" "$parameter_url"
 	__verbose "Looking up URL in memory file %s" "$PWD/data/$unit_name.memory"
 
-	if [[ -f "$PWD/data/$unit_name.memory" ]] && is_url_in_memory_file "$parameter_url" "$PWD/data/$unit_name.memory"; then
-		__verbose "URL %s is skipped because it has previously been downloaded successfully." "$parameter_url"
-		return
-	fi
+	queue_suffix=""
 
-	if [[ "$parameter_url" =~ ^(https://)(.+\.)?(youtube\.[^/]+|youtu\.be)/ ]]; then
-		__verbose "Looking for a playlist URL for the youtube video from the same channel"
-		local parameter_url2
-		parameter_url2="$parameter_url"
-		local new_video_url
+	previous_download=false
+	[[ -f "$PWD/data/$unit_name.memory" ]] && is_url_in_memory_file "$parameter_url" "$PWD/data/$unit_name.memory" && previous_download=true
+	# if previous_download=true, does only mean, known, if given playlist or channel because we use a cache, does not mean, updated, most recent videos included
 
-		if new_video_url="$(handle_youtube_url "$parameter_url")"; then
-			if [[ -n "$new_video_url" ]]; then
-				url_changed=true
-				parameter_url="$new_video_url"
-				if [[ "$parameter_url2" != "$parameter_url" ]]; then
-					__verbose "New video URL %s" "$parameter_url"
-				fi
-			fi
-		else
-			__warn "URL %s failed!" "$parameter_url"
+	declare -aG url_array
+	url_array=()
 
-			if [[ -f "$known_failed_file_log" ]] && grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null"; then
-				__warn "URL %s IS A KNOWN FAIL!" "$parameter_url"
-			fi
+	hostname="$(get_hostname_by_url "$parameter_url")" || hostname=""
+	link_kind="$(detect_link_kind "$hostname" "$parameter_url")" || link_kind=""
 
-			echo "$parameter_url_unsanitized" >> "$current_fails_file_log"
+    if [[ "$link_kind" == "video" ]] && $filtered_queue && $previous_download && ! $ignore_memory; then
+    	__verbose "URL %s is skipped because it has previously been downloaded successfully." "$parameter_url"
+    	return
+    fi
 
-			if [[ -f "$known_failed_file_log" && -f "$failed_file_log" ]] && ! grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null" && ! grep --quiet -- "^$parameter_url_unsanitized$" "$failed_file_log" > "/dev/null"; then
-				echo "$parameter_url_unsanitized" >> "$failed_file_log"
-			elif [[ ! -f "$known_failed_file_log" ]]; then
-				if [[ -f "$failed_file_log" ]]; then
-					if ! grep --quiet -- "^$parameter_url_unsanitized$" "$failed_file_log" > "/dev/null"; then
-						echo "$parameter_url_unsanitized" >> "$failed_file_log"
-					fi
-				elif [[ ! -f "$failed_file_log" ]]; then
-					echo "$parameter_url_unsanitized" >> "$failed_file_log"
-				fi
-			fi
-
-			return
+	if [[ "$hostname" == "youtube" ]]; then
+		if ! handle_youtube_url url_array "$parameter_url" "$parameter_url_unsanitized" "$possibly_original_playlist_id"; then
+			__warn "Enqueue: Handler error state: %s" "$(cat -- "$HANDLER_ERROR_FILE")"
+			echo -n >| "$HANDLER_ERROR_FILE"
+			return 1
 		fi
 	else
-		__info "%s is not a youtube link" "$parameter_url"
+		__verbose "%s is not a youtube link" "$parameter_url"
+		url_array+=("$parameter_url")
 	fi
 
-	if $url_changed; then
-		parameters+=( "\"--metadata-source-url=\\\"$parameter_url_unsanitized\\\"\"" )
+	if [[ -s "$HANDLER_ERROR_FILE" ]]; then
+		__info "Handler reported: %s" "$(cat -- "$HANDLER_ERROR_FILE")"
+		echo -n >| "$HANDLER_ERROR_FILE"
 	fi
 
-    if [[ "$parameter_url" != "$arguments" ]]; then
-		parameters[0]="\"$parameter_url\""
-	else
-		arguments=""
-	fi
-
-	for arguments in $arguments; do
-		parameters+=( "\"$arguments\"" )
+	r_parameters=()
+	for parameter in "${parameters[@]}"; do
+		r_parameters+=( "$parameter" )
 	done
 
-	item_count="${#parameters[@]}"
+	url_array_length="${#url_array[@]}"
+	if (( url_array_length == 1 )); then
+		insert_into_queue "${url_array[0]}" "$queue_file" "$queue_name"
+	elif (( url_array_length > 1 )); then
 
-	if ! $force_download; then
-		line="${parameters[*]}"
+		extension="${queue_file##*.}"
+        filename="${queue_file%.*}"
+		local child_queue_file="$filename.channel-$queue_suffix.$extension"
+
+		extension="${queue_name##*.}"
+        filename="${queue_name%.*}"
+		local child_queue_name="$filename.channel-$queue_suffix.$extension"
+
+		local child_queue_name_orig="$real_queue_name.channel-$queue_suffix.$extension"
+		cp -- "$__script_path/templates/$template_name.template" "$child_queue_file"
+
+		r_parameters+=( "\"--metadata-attach-queue=$child_queue_name_orig:$child_queue_name\"" )
+		insert_into_queue "$parameter_url" "$queue_file" "$queue_name"
+
+		for url in "${url_array[@]}"; do
+			r_parameters=()
+			for parameter in "${parameters[@]}"; do
+				r_parameters+=( "$parameter" )
+			done
+			r_parameters+=( "\"--metadata-parent-queue=$real_queue_name:$real_queue_file\"" )
+
+			url_changed=false
+			parameter_url_unsanitized=""
+			previous_download=false
+			[[ -f "$PWD/data/$unit_name.memory" ]] && is_url_in_memory_file "$url" "$PWD/data/$unit_name.memory" && previous_download=true
+
+			insert_into_queue "$url" "$child_queue_file" "$child_queue_name"
+		done
 	else
-		line="${parameters[*]} \"--download-archive=data/archive/$__current_date.memory\""
-		((item_count++)) ||__expression_may_fail
+		__warn "%s is corrupt!" "$parameter_url"
 	fi
-
-	line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items
-
-	# source: https://blog.stigok.com/2018/05/31/surprising-sed-replace-uri-with-ampersand.html
-	# escape certain characters
-	line=$(sed 's/[&/\]/\\&/g' <<< "$line")
-
-	# source: https://unix.stackexchange.com/questions/188264/how-do-i-substitute-only-first-occurence-with-sed
-	# insert download data below top-most "+ \" insertion marker, but none other if existing
-	sedex="/^+ \\\/{s//+ \\\\\n$line\\\/;:p;n;bp}"
-
-	sed -i "$sedex" "$queue_file" && __info "The url %s is appended to queue %s" "${parameters[0]}" "$queue_name"
-
-	# link-muddler-delete-link "${parameters[0]}" #@fixme
 }
+
+function insert_into_queue(){
+	local url="$1"
+	local queue_file="$2"
+	local queue_name="$3"
+
+	if $url_changed; then
+    	r_parameters+=( "\"--metadata-original-url=$parameter_url_unsanitized\"" )
+    fi
+
+    if $previous_download; then
+    	r_parameters+=( "\"--metadata-in-memory=true\"" )
+    else
+    	r_parameters+=( "\"--metadata-in-memory=false\"" )
+    fi
+
+    r_parameters[0]="\"$url\""
+
+    for arguments in $arguments; do
+    	r_parameters+=( "\"$arguments\"" )
+    done
+
+    item_count="${#r_parameters[@]}"
+
+    if $force_download; then
+    	line="${r_parameters[*]} \"--download-archive=data/archive/$__current_date.memory\""
+    	((item_count++)) ||__expression_may_fail
+    else
+    	line="${r_parameters[*]}"
+    fi
+
+    line="$((2+item_count)) $line -- " # item_count +2 because: "––" and item_count itself are counted as two additional items
+
+    # source: https://blog.stigok.com/2018/05/31/surprising-sed-replace-uri-with-ampersand.html
+    # escape certain characters
+    line=$(sed 's/[&/\]/\\&/g' <<< "$line")
+
+    # source: https://unix.stackexchange.com/questions/188264/how-do-i-substitute-only-first-occurence-with-sed
+    # insert download data below top-most "+ \" insertion marker, but none other if existing
+    sedex="/^+ \\\/{s//+ \\\\\n$line\\\/;:p;n;bp}"
+
+    sed -i "$sedex" "$queue_file" && __info "The url %s is appended to queue %s\n" "${r_parameters[0]}" "$queue_name"
+
+    # link-muddler-delete-link "${r_parameters[0]}" #@fixme
+}
+
+real_queue_file=""
+real_queue_name=""
+download_archive=""
+for option in "$@"; do
+	if [[ "$option" =~ "--force" ]]; then
+		force_download=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--ignore_memory" ]]; then
+		ignore_memory=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--quiet" ]]; then
+		__quiet=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--verbose" ]]; then
+		__verbose=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--debug" ]]; then
+		__debug=true
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--download-archive"* ]]; then
+		download_archive="$1"
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--unit-name"* ]]; then
+		unit_name32222222222222ggg="${1#*"="}"  ###
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--queue-file"* ]]; then
+		real_queue_file="${1#*"="}"
+		shift ||__expression_may_fail
+	elif [[ "$option" =~ "--queue-name"* ]]; then
+		real_queue_name="${1#*"="}"
+		shift ||__expression_may_fail
+	fi
+done
+
+if [[ -z "$1" ]]; then
+	__error "Queue file not given"
+	__exit_failsafe
+fi
+
+template_name="${1%:*}"
+queue_full_file_path="${1#*:}"
+
+if [[ "$queue_full_file_path" == "$template_name" ]]; then
+	queue_file="$application_var_directory/queues/$template_name.queue"
+else
+	queue_file="$queue_full_file_path"
+	# @fixme verify if given $1 = "axudio:/home/ju/Daten1/var/undownloader/application/queues/foobar_music.queue"
+	# that $template_name axudiozzz is the correct template name for the queue (which it is not, the string is erroneously accepted)
+fi
+
+if [[ ! -f "$queue_file" ]]; then
+	__error "Queue file '%s' does not exist" "$queue_file"
+	__exit_failsafe
+fi
+
+queue_name="$queue_full_file_path"
+shift ||__expression_may_fail
 
 if [[ -z "${1:-}" ]]; then
 	previous_line="?"
-	echo "No data provided, entering INPUT MODE, use linebreak to exit"
+	echo "No data provided, entering INPUT MODE, use double linebreak to exit"
 
 	while true; do
 		read -r line

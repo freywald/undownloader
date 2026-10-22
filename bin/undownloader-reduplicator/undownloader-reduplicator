@@ -1,0 +1,543 @@
+#!/bin/bash
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../../")/library/base" || exit 1
+__set_script_path 1
+__enable_error_handler
+function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+source -- "$__script_path/library/undownloader-reduplicator-library" || exit 1
+
+index_only=false
+arguments=()
+debug=false
+hash_streams=false
+compare=false
+index_reference_only=false
+
+help() {
+    echo "Usage: $0 [--list-only] ACTIVE_LIBRARY" >&2
+    echo "       $0 [--list-only] REFERENCE_LIBRARY ACTIVE_LIBRARY [TARGET_DIR]" >&2
+    echo "  Reference library is not modified (default: 🔴.undownloaded)." >&2
+    echo "  Duplicate video ids are moved off the active library." >&2
+    echo "  Default TARGET_DIR is realpath(ACTIVE)/../undownloader-reduplicator/<DATE>/duplicates-active" >&2
+    echo "  --list-only  use existing reduplicator-matches.txt; simulate only, do not move" >&2
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        --list-only)
+            index_only=true
+            shift ||:
+            ;;
+        --compare)
+            compare=true
+            shift ||:
+            ;;
+        --list-reference-only)
+            index_reference_only=true
+            index_only=true
+            shift ||:
+            ;;
+        --enable-media-hashing)
+            hash_streams=true
+            shift ||:
+            ;;
+        --help)
+            help
+            exit 0
+            ;;
+        --debug)
+            debug=true
+            __debug=true
+            shift ||:
+            ;;
+        --)
+            shift ||:
+            arguments+=("$@")
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            help
+            exit 1
+            ;;
+        *)
+            arguments+=("$1")
+            shift ||:
+            ;;
+    esac
+done
+
+set -- "${arguments[@]}"
+
+if (( $# < 1 )); then
+    help
+    exit 1
+fi
+
+additional_arguments=""
+$debug && additional_arguments="$additional_arguments--debug "
+$hash_streams && additional_arguments="$additional_arguments--enable-media-hashing "
+
+count_matches() {
+    local file="$1"
+    local lines ids
+
+    lines=0
+    ids=0
+    if [[ -f "$file" ]]; then
+        lines="$(grep -c -- '.' "$file" ||:)"
+        ids="$(cut -d: -f1 -- "$file" | sort -u | grep -c -- '.' ||:)"
+    fi
+    printf '%s %s' "$lines" "$ids"
+}
+
+fs_device() {
+    local p="${1-}"
+    [[ -n "$p" ]] || return 1
+    while [[ ! -e "$p" && ! -L "$p" && "$p" != "/" ]]; do
+        p="$(dirname -- "$p"; printf x)"
+        p="${p%$'\n'x}"
+    done
+    stat -c %d -- "$p"
+}
+
+same_filesystem() {
+    local a b
+    a="$(fs_device "$1")" || return 1
+    b="$(fs_device "$2")" || return 1
+    [[ "$a" == "$b" ]]
+}
+
+path_inside() {
+    local inner="$1"
+    local outer="$2"
+    [[ "$inner" == "$outer" || "$inner" == "$outer"/* ]]
+}
+
+downloaded_library_from_reference() {
+    local ref="${1%/}"
+    if [[ "$ref" != *"/🔴.undownloaded" && "$ref" != *"/🔴.undownloaded/"* ]]; then
+        return 1
+    fi
+    printf '%s/' "${ref%%/🔴.undownloaded*}/🔴.downloaded"
+}
+
+index_reference_library() {
+    __info "Indexing reference library: $reference_library"
+    (
+        cd -- "$reference_library" || exit 1
+        undownloader-reduplicator-index --run-dir "$run_dir/logs-reference/" "$reference_matches_file_name" >| "reduplicator-matches.txt"
+    ) || exit 1
+
+    local downloaded=""
+    if downloaded="$(downloaded_library_from_reference "$reference_library")" && [[ -d "$downloaded" ]]; then
+        __info "Indexing static library: $downloaded"
+        mkdir --parents -- "$run_dir/logs-downloaded/" || exit 1
+        (
+            cd -- "$downloaded" || exit 1
+            undownloader-reduplicator-index --run-dir "$run_dir/logs-downloaded/" \
+                "reduplicator-matches.txt" >| "reduplicator-matches.txt"
+        ) || exit 1
+        sort --unique --output="$reference_matches_file" -- \
+            "$reference_matches_file" \
+            "$downloaded/reduplicator-matches.txt"
+        if [[ -f "$run_dir/logs-downloaded/content.sources" ]]; then
+            sort --unique --output="$run_dir/logs-reference/content.sources" -- \
+                "$run_dir/logs-reference/content.sources" \
+                "$run_dir/logs-downloaded/content.sources"
+        fi
+    elif [[ -n "${downloaded:-}" ]]; then
+        __warn "Static library not present, skip: %s" "$downloaded"
+    fi
+}
+
+if (( $# == 1 )); then
+    reference_library="🔴.undownloaded/files/"
+    active_library="$1/"
+else
+    reference_library="$1/"
+    active_library="$2/"
+fi
+
+if [[ ! -d "$active_library" ]]; then
+    __error "Active library does not exist or is not a directory: %s" "${active_library%/}"
+    exit 1
+fi
+
+if [[ ! -d "$reference_library" ]]; then
+    __error "Reference library does not exist or is not a directory: %s" "${reference_library%/}"
+    exit 1
+fi
+
+reference_library="$(realpath -- "$reference_library"; printf x)"
+reference_library="${reference_library%$'\n'x}/"
+reference_matches_file_name="reduplicator-matches.txt"
+reference_matches_file="$reference_library$reference_matches_file_name"
+
+active_library="$(realpath -- "$active_library"; printf x)"
+active_library="${active_library%$'\n'x}/"
+active_matches_file_name="reduplicator-matches.txt"
+active_matches_file="$active_library$active_matches_file_name"
+
+if active_is_undownloaded "${active_library%/}"; then
+    __error "Active library must not be 🔴.undownloaded or lie under it: %s" "${active_library%/}"
+    exit 1
+fi
+
+if [[ ! -d "$active_library" || ! -d "$reference_library" ]]; then
+    __error "Resolved library path is not a directory"
+    exit 1
+fi
+
+run_dir="$PWD/undownloader-reduplicator/$__current_date/"
+mkdir --parents -- "$run_dir" || exit 1
+
+explicit_target=false
+active_parent="$(realpath -- "${active_library%/}/.."; printf x)"
+active_parent="${active_parent%$'\n'x}"
+
+if [[ -n "${3-}" ]]; then
+    explicit_target=true
+    target_directory="$(realpath --canonicalize-missing -- "$3"; printf x)"
+    target_directory="${target_directory%$'\n'x}"
+else
+    if ! same_filesystem "$active_library" "$active_parent"; then
+        __error "Default target would leave the active library filesystem."
+        __error "Active:  %s" "${active_library%/}"
+        __error "Parent:  %s" "$active_parent"
+        __error "Pass TARGET_DIR on the same filesystem as the active library."
+        exit 1
+    fi
+    target_directory="$active_parent/undownloader-reduplicator/$__current_date/duplicates-active"
+fi
+
+if $explicit_target && [[ -e "$3" && ! -d "$3" ]]; then
+    __error "TARGET_DIR exists and is not a directory: %s" "$3"
+    exit 1
+fi
+
+target_directory="${target_directory%/}"
+
+if path_inside "$(realpath --canonicalize-missing -- "$target_directory")" "$(realpath -- "${active_library%/}")"; then
+    __error "Target directory must not be inside the active library: $target_directory"
+    exit 1
+fi
+
+if $explicit_target && ! same_filesystem "$active_library" "$target_directory"; then
+    __warn "Target is on a different filesystem than the active library."
+    __warn "Active: %s" "${active_library%/}"
+    __warn "Target: %s" "$target_directory"
+    __warn "Moves will copy then delete (not an atomic rename)."
+    if ! __confirm "Continue with this target directory?"; then
+        __info "Aborted. No files were moved."
+        exit 1
+    fi
+fi
+
+mkdir --parents -- "$target_directory" || exit 1
+
+run_target_link="${run_dir}duplicates-active"
+resolved_target="$(realpath --canonicalize-missing -- "$target_directory"; printf x)"
+resolved_target="${resolved_target%$'\n'x}"
+resolved_link="$(realpath --canonicalize-missing -- "$run_target_link"; printf x)"
+resolved_link="${resolved_link%$'\n'x}"
+
+if [[ "$resolved_link" != "$resolved_target" ]]; then
+    if [[ -L "$run_target_link" ]]; then
+        ln --symbolic --force --no-dereference -- "$target_directory" "$run_target_link" || exit 1
+    elif [[ -e "$run_target_link" ]]; then
+        __warn "Not replacing existing path with symlink: $run_target_link"
+    else
+        ln --symbolic -- "$target_directory" "$run_target_link" || exit 1
+    fi
+fi
+
+echo
+echo "This run"
+echo "  Mode:                 $(if $compare; then echo "compare"; elif $index_only; then echo "list-only"; else echo "index, simulate, then move"; fi)"
+echo "  Reference library:    ${reference_library%/}"
+echo "  Active library:       ${active_library%/}"
+echo "  Reference matches:    $reference_matches_file"
+echo "  Active matches:       $active_matches_file"
+echo "  Run / logs:           $run_dir"
+echo "    logs-active:        ${run_dir}logs-active/"
+echo "    logs-reference:     ${run_dir}logs-reference/"
+echo "  Target (files):       $target_directory"
+echo "  Target link in run:   ${run_dir}duplicates-active/"
+if $explicit_target; then
+    echo "  Target source:        command line"
+else
+    echo "  Target source:        default (parent of active library)"
+fi
+echo
+echo "Reference is not modified."
+echo "Index writes new reduplicator-matches.txt in each library (previous file is moved aside)."
+echo "Duplicate units are moved from the active library to the target, not whole folders."
+echo
+
+__press_any_key_to_continue
+
+if $index_only; then
+    if $index_reference_only; then
+        if [[ ! -f "$reference_matches_file" || ! -f "$active_matches_file" ]]; then
+            __warn "--list-reference-only needs %s and %s, --list-reference-only is disabled, --list-only remains active" "$reference_matches_file" "$active_matches_file"
+            index_reference_only=false
+        fi
+
+        if [[ ! -f "$active_matches_file" ]]; then
+            if [[ -f "$active_library/reduplicator-last-matches.txt" ]]; then
+                active_matches_file_name="reduplicator-last-matches.txt"
+                active_matches_file="$active_library$active_matches_file_name"
+            else
+                __warn "--list-reference-only needs %s, --list-reference-only is disabled, --list-only remains active" "$active_matches_file"
+                index_reference_only=false
+            fi
+        fi
+
+		index_reference_library
+#        __info "Indexing reference library: $reference_library"
+#        (
+#            cd -- "$reference_library" || exit 1
+#            undownloader-reduplicator-index --run-dir "$run_dir/logs-reference/" "$reference_matches_file_name" >| "reduplicator-matches.txt"
+#        ) || exit 1
+
+        if ! $index_reference_only; then
+            __info "Indexing active library: $active_library"
+            (
+                cd -- "$active_library" || exit 1
+                undownloader-reduplicator-index --run-dir "$run_dir/logs-active/" "$active_matches_file_name" >| "reduplicator-matches.txt"
+            ) || exit 1
+        fi
+    elif [[ ! -f "$reference_matches_file" || ! -f "$active_matches_file" ]]; then
+        __warn "--list-only needs %s and %s" "$reference_matches_file" "$active_matches_file"
+        exit 1
+    fi
+
+    __info "Using existing reduplicator-matches.txt"
+else
+    __info "Indexing active library: $active_library"
+    (
+        cd -- "$active_library" || exit 1
+        undownloader-reduplicator-index --run-dir "$run_dir/logs-active/" "$active_matches_file_name" >| "reduplicator-matches.txt"
+    ) || exit 1
+
+	index_reference_library
+#    __info "Indexing reference library: $reference_library"
+#    (
+#        cd -- "$reference_library" || exit 1
+#        undownloader-reduplicator-index --run-dir "$run_dir/logs-reference/" "$reference_matches_file_name" >| "reduplicator-matches.txt"
+#    ) || exit 1
+fi
+
+read -r lines_reference ids_reference <<<"$(count_matches "$reference_matches_file")"
+read -r lines_active ids_active <<<"$(count_matches "$active_matches_file")"
+
+echo "Reference library matches: $lines_reference line(s), $ids_reference video id(s)"
+echo "Active library matches:    $lines_active line(s), $ids_active video id(s)"
+echo
+
+if $compare; then
+    reference_sources="$run_dir/logs-reference/content.sources"
+    active_sources="$run_dir/logs-active/content.sources"
+
+    __heading "missing files"
+    echo "The following content is still missing from reference library,"
+    comm -13 <(sort -u -- "$reference_sources") <(sort -u -- "$active_sources")
+    echo
+    echo -ne "\t\t\t\t – see file content.sources: $active_sources"
+    echo
+    echo
+    echo
+
+    active_unresolved="$run_dir/logs-active/unresolved.txt"
+    __heading "unresolved files"
+    if [[ -f "$active_unresolved" && -s "$active_unresolved" ]]; then
+        cat -- "$active_unresolved"
+        echo
+        echo -ne "\t\t\t\t – see file unresolved.txt: $active_unresolved"
+    else
+        echo "(none)"
+    fi
+    echo
+    echo
+    echo "Comparison finished (--compare). No files were moved."
+    echo
+    exit 0
+fi
+
+__info "Simulate move"
+if (
+    cd -- "$active_library" || exit 1
+    undownloader-reduplicator-filter --run-dir "$run_dir/logs-active/" "$reference_matches_file" "$active_matches_file" | undownloader-reduplicator-move $additional_arguments --simulate --run-dir "$run_dir/logs-active/" --reference "$reference_matches_file" - ${target_directory:+"$target_directory"}
+); then
+    :
+else
+    status=$?
+    if (( status == 99 )); then
+		reference_sources="$run_dir/logs-reference/content.sources"
+		active_sources="$run_dir/logs-active/content.sources"
+		echo
+		echo "For content still missing from reference library, see content.sources: $active_sources"
+		comm -13 <(sort -u -- "$reference_sources") <(sort -u -- "$active_sources")
+
+		active_unresolved="$run_dir/logs-active/unresolved.txt"
+		echo
+		echo "Active unresolved: $active_unresolved"
+		if [[ -f "$active_unresolved" && -s "$active_unresolved" ]]; then
+			cat -- "$active_unresolved"
+		else
+			echo "(none)"
+		fi
+
+        __success "Nothing to do."
+        exit 0
+    fi
+    __warn "Simulate failed with status $status"
+    exit "$status"
+fi
+
+echo
+errors="$run_dir/logs-active/errors.log"
+if [[ ! -f "$errors" ]]; then
+    __warn "Missing $errors after simulate"
+    exit 1
+fi
+
+if [[ -s "$errors" ]]; then
+    __warn "Simulate reported errors; not moving. See $errors"
+    exit 1
+fi
+
+echo "Simulate finished with an empty $errors."
+
+if $index_only; then
+    echo "Listing only (--list-only). No files were moved."
+    exit 0
+fi
+
+count_lines() {
+    local f="$1"
+    [[ -f "$f" ]] || { printf '0'; return 0; }
+    grep -c -- '.' "$f" ||:
+}
+
+ref_matches="$reference_matches_file"
+act_matches="$active_matches_file"
+move_log="$run_dir/logs-active/move.log"
+only_active="$run_dir/logs-active/matches-only-in-active.txt"
+only_ref="$run_dir/logs-active/matches-only-in-reference.txt"
+unresolved_f="$run_dir/logs-active/unresolved.txt"
+warnings_f="$run_dir/logs-active/warnings.log"
+errors_f="$run_dir/logs-active/errors.log"
+
+units="$(grep -c -- '^video id ' "$move_log" 2>/dev/null ||:)"
+files="$(grep -c -- '^    ' "$move_log" 2>/dev/null ||:)"
+ids_move="$(sed -n 's/^video id //p' "$move_log" 2>/dev/null | sort -u | grep -c -- '.' ||:)"
+
+read -r ref_lines ref_ids <<<"$(count_matches "$ref_matches")"
+read -r act_lines act_ids <<<"$(count_matches "$act_matches")"
+
+echo
+echo "Index"
+echo "  Reference:  $ref_lines file(s), $ref_ids video id(s)"
+echo "  Active:     $act_lines file(s), $act_ids video id(s)"
+echo
+echo "This move (simulate)"
+echo "  Units to move:   ${units:-0}"
+echo "  Files to move:   ${files:-0}   (media + same-stem sidecars)"
+echo "  Distinct ids:    ${ids_move:-0}"
+echo
+echo "Not moved"
+echo "  Only in active:     $(count_lines "$only_active") line(s)"
+echo "  Only in reference:  $(count_lines "$only_ref") line(s)"
+echo "  Unresolved:         $(count_lines "$unresolved_f") line(s)"
+echo "  Warnings:           $(count_lines "$warnings_f") line(s)"
+echo "  Errors:             $(count_lines "$errors_f") line(s)"
+echo
+echo "Reference:             $reference_library"
+echo "Active:                $active_library"
+echo "Target:                $target_directory"
+echo "Run directory:         $run_dir"
+echo
+
+#echo "The reference library content is not changed. The active library is compared with the reference library."
+#echo "A unit is a media file plus the sidecars that share its filename stem."
+#echo "Units whose video id already exists in the reference library are moved to the target directory."
+#echo "Only the files in the unit are moved, not the whole folder."
+
+echo "The reference library content is not changed. The active library is compared with the reference library."
+echo "Units in the active library that also reside in the reference library will be moved to the target directory."
+echo "Units are matched from both libraries via the determined video id."
+echo "A _unit_ is a media file plus the other files that share its filename stem – Media files and other files that belong to a media file that share its filename stem form a _unit_."
+echo "Only the files in the unit are moved, not the leaf folder."
+echo "In effect: all files that belong to a unit on the active library whose determined video id already exists in the reference library will be moved together."
+
+echo
+
+if ! __confirm "Proceed to move the files?"; then
+    __info "Aborted. No files were moved."
+    exit 1
+fi
+
+echo
+echo "Moving started…"
+if (
+    cd -- "$active_library" || exit 1
+    undownloader-reduplicator-filter --run-dir "$run_dir/logs-active" "$reference_matches_file" "$active_matches_file" | undownloader-reduplicator-move $additional_arguments --run-dir "$run_dir/logs-active" - ${target_directory:+"$target_directory"}
+); then
+    :
+else
+    status=$?
+    if (( status == 99 )); then
+		reference_sources="$run_dir/logs-reference/content.sources"
+		active_sources="$run_dir/logs-active/content.sources"
+		echo
+		echo "For content still missing from reference library, see content.sources: $active_sources"
+		comm -13 <(sort -u -- "$reference_sources") <(sort -u -- "$active_sources")
+
+		active_unresolved="$run_dir/logs-active/unresolved.txt"
+		echo
+		echo "Active unresolved: $active_unresolved"
+		if [[ -f "$active_unresolved" && -s "$active_unresolved" ]]; then
+			cat -- "$active_unresolved"
+		else
+			echo "(none)"
+		fi
+
+        __success "Nothing to do."
+    else
+        __warn "Move failed with status $status"
+        exit "$status"
+    fi
+fi
+
+if [[ -s "$errors" ]]; then
+    __warn "Run reported errors. See $errors"
+    exit 1
+fi
+
+backup_matches "$reference_matches_file"
+if [[ "$active_matches_file_name" != "reduplicator-last-matches.txt" ]]; then
+    cp -- "$active_matches_file" "$active_library/reduplicator-last-matches.txt"
+fi
+backup_matches "$active_matches_file"
+
+__info "undownloader-reduplicator finished. Run logs are in %s" "$run_dir/logs-active/"
+
+reference_sources="$run_dir/logs-reference/content.sources"
+active_sources="$run_dir/logs-active/content.sources"
+echo
+echo "For content still missing from reference library, see content.sources: $active_sources"
+comm -13 <(sort -u -- "$reference_sources") <(sort -u -- "$active_sources")
+
+active_unresolved="$run_dir/logs-active/unresolved.txt"
+echo
+echo "Active unresolved: $active_unresolved"
+if [[ -f "$active_unresolved" && -s "$active_unresolved" ]]; then
+    cat -- "$active_unresolved"
+else
+    echo "(none)"
+fi
+
+__success "undownloader-reduplicator found lot o' duplicates and reduplicated them. Successfully. Why not take more if you can have more? Have a good day!"

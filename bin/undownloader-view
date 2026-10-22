@@ -5,29 +5,164 @@ __set_script_path
 __enable_error_handler
 function local_exit_failsafe() { __exit_failsafe; exit 1; }
 
+disable_error_handler_log_file=true
 source -- "$__script_path/library/main" || exit 1
 source -- "$__script_path/configuration/defaults" || exit 1
 source -- "$__script_path/configuration/view.defaults" || exit 1
+
+
+
+# LÖSUNG: .sources = sources list,
+# .queue ist eine queue
+# und ohne endung immer eine unit
+# das schon beim undownloader erlauben --unit music
+# und das wird weitergegeben an undownloader-view
+# undownloader wird alle sources music
+# *.music.template.sources
+# und *.music.sources
+# und music.sources
+# verarbeiten und undownloader-view wird den view
+# music.view auf das targetverzeichnis 🔴.undownloaded anwenden
+# gibt es noch andere views oder noch andere sources mit anderer unit
+# wie z.B. prayer.sources werde diese nicht verwendet
+# sucht zuerst die dateien im targetverzeichnis music/🔴.undownloaded, dann nur 🔴.undownloaded.
+# für undownloader und view.
+# view wird im aktuellen verzeichnis generiert.
+# gibt es noch andere views mit der unitname "music"
+# *.music.template.view
+# und *.music.view
+# und music.view
+# auch genommen.
+# das ist die verarbeitungsweise von undownloader --all --unit=music bzw. undownloader-view
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# PNQ>0
+# (sources) N : 1 (master queue)
+# (sources) P : 1 (download target) : Q views
+# views and sources are distinct. to build 1 view we need all the sources files
+
+# the music.view creates the following files
+# it must read into its database all sources to create a view
+# music.video.sources => ■ music.video
+# music.audio+video.sources => ■ music.audio+video
+# music.audio.sources => ■ music.audio
+# all the undownloaded files reside in the directory 🔴.undownloaded
+# the view read all files in the 🔴.undownloaded to create a view
+# music seems to be the unit name
+# but how about the case if there are various sources file but not a determinable unit name from sources by corresponding sources file name stem?
+# should in this case the unit name be resolved by the upper directory name?
 
 directory=""
 input_sources_name=""
 input_view_name=""
 update_all_views=false
-
-#__quiet=true
-#__debug=true
-#__verbose=true
+update_all_sources=false
+print_sources_files=false
 
 for argument in "$@"; do
 	if [[ "$argument" == "--" ]]; then
 		continue
 	fi
 	if [[ "$argument" =~ ^--view ]]; then
-    	# default action
+    	# default action, currently noop
     	shift ||__expression_may_fail
     	continue
-    elif [[ "$argument" =~ ^--update-all ]]; then
+	elif [[ "$argument" =~ ^--print-sources || "$argument" =~ ^--print ]]; then
+		print_sources_files=true
+		shift ||__expression_may_fail
+	elif [[ "$argument" =~ ^--quiet ]]; then
+		__quiet=true
+		shift ||__expression_may_fail
+	elif [[ "$argument" =~ ^--verbose ]]; then
+		__verbose=true
+		shift ||__expression_may_fail
+	elif [[ "$argument" =~ ^--debug ]]; then
+		__debug=true
+		shift ||__expression_may_fail
+	elif [[ "$argument" =~ ^--force-view-updates || "$argument" =~ ^--force-view-update || "$argument" =~ ^--force ]]; then
+    	force_view_update=true
+    	shift ||__expression_may_fail
+    	continue
+    elif [[ "$argument" =~ ^--from-all-sources ]]; then
+		update_all_sources=true
+		shift ||__expression_may_fail
+		continue
+    elif [[ "$argument" =~ ^--update-all-views ]]; then
 		update_all_views=true
+		shift ||__expression_may_fail
+		continue
+    elif [[ "$argument" =~ ^--all || "$argument" =~ ^--update-all ]]; then
+		update_all_views=true
+		update_all_sources=true
+		shift ||__expression_may_fail
+		continue
+    elif [[ "$argument" =~ ^--force-all ]]; then
+		update_all_views=true
+		update_all_sources=true
+		force_view_update=true
 		shift ||__expression_may_fail
 		continue
 	elif [[ "$argument" =~ ^--.* ]]; then
@@ -35,20 +170,20 @@ for argument in "$@"; do
 		local_exit_failsafe
 	fi
 
-	file="$argument"
+	file="$argument" #scan for pseudo '$1'
 	file_extension="${file##*.}"
 	if [[ "$file_extension" == "sources" ]]; then
-		input_sources_name="$1"
+		input_sources_name="$file"
 		shift ||__expression_may_fail
 	elif [[ "$file_extension" == "view" ]]; then
-		input_view_name="$1"
+		input_view_name="$file"
 		shift ||__expression_may_fail
-	elif [[ -z "$input_view_name" ]]; then
-		input_view_name="$1"
-		shift ||__expression_may_fail
-	else
-		__error "input error %s" "$@"
-		local_exit_failsafe
+	#elif [[ -z "$input_view_name" ]]; then
+	#	input_view_name="$1"
+	#	shift ||__expression_may_fail
+	#else
+	#	__error "input error %s" "$@"
+	#	local_exit_failsafe
 	fi
 done
 
@@ -56,6 +191,14 @@ __template_name=""
 __regular_expression_configuration_matches=""
 archive_on_update=true
 formatters=("file.{{file_extension}}") # default, does not make much sense to use, that's why it's the default, because you should customize it by using a view
+
+media_extensions=(
+	"mp4" "mkv" "webm" "mov" "avi" "flv"
+	"m4a" "mka" "mp3" "aac" "ogg" "opus" "wav"
+	"3gp" "m4v"
+	"mpg" "mpeg" "wmv" "asf" "ts" "m2ts" "mts" "vob" "ogv" "3g2" "f4v"
+	"flac" "wma" "ac3" "eac3" "dts" "aiff" "aif" "ape" "oga" "weba"
+)
 
 detect_filesystem() {
 	local path="$1"
@@ -741,84 +884,100 @@ function handle_file(){
 	return 0
 }
 
-ix=0
+reconstruct_json_file() {
+    local dest="$1"
+    shift ||:
 
-function update_view() {
-	local view_name="$1"
+    local -A src=()
+    local key value item
+    local tmp obj
+    local upload_date=""
 
-	__debug "view_name=$view_name"
+    if [[ -n "${1-}" && "$1" != *=* ]]; then
+        local -n _src="$1"
+        for key in "${!_src[@]}"; do
+            src["$key"]="${_src[$key]}"
+        done
+        shift ||:
+    fi
 
-	if [[ ! -f "$view_name.view" ]]; then
-		__error "view %s not found" "$view_name.view"
-		local_exit_failsafe
-	fi
+    for item in "$@"; do
+        [[ "$item" == *=* ]] || continue
+        src["${item%%=*}"]="${item#*=}"
+    done
 
-	source -- "$view_name.view" || exit 1
+    if (( ${#src[@]} == 0 )); then
+        echo "reconstruct_json_file: no keys to write" >&2
+        return 1
+    fi
 
-	handle_source_selector "$sources_file" "$view_name"
+    if [[ -n "${src[upload_date]-}" ]]; then
+        upload_date="${src[upload_date]}"
+    elif [[ -n "${src[date]-}" ]]; then
+        upload_date="$(date --date="${src[date]}" +%Y%m%d 2>/dev/null ||:)"
+    fi
+    [[ -n "$upload_date" ]] && src[upload_date]="$upload_date"
 
-	detect_filesystem "."
+    obj='{}'
+    for key in "${!src[@]}"; do
+        obj="$(jq -c --arg k "$key" --arg v "${src[$key]}" '. + {($k): $v}' <<<"$obj")" || {
+            echo "reconstruct_json_file: jq merge failed for $key" >&2
+            return 1
+        }
+    done
 
-	search_directory="🔴.undownloaded"
+    tmp="$(mktemp)" || return 1
+    if ! jq --indent 4 '
+        . + {
+            _type: (."_type" // "video"),
+            extractor: (.extractor // "undownloader"),
+            extractor_key: (.extractor_key // "undownloader"),
+            title: (.title // .name // empty),
+            channel: (.channel // .channel_name // empty),
+            channel_id: (.channel_id // empty),
+            channel_url: (
+                .channel_url
+                // (if .channel_id then "https://www.youtube.com/channel/\(.channel_id)" else empty end)
+            ),
+            uploader: (.uploader // .channel_name // .channel // empty),
+            uploader_id: (.uploader_id // .channel_alias // empty),
+            webpage_url: (
+                .webpage_url
+                // (if .id then "https://www.youtube.com/watch?v=\(.id)" else empty end)
+            ),
+            __undownloader_original_url: (
+                .__undownloader_original_url
+                // (if .id then "https://www.youtube.com/watch?v=\(.id)" else empty end)
+            )
+        }
+        | .original_url = (.original_url // .webpage_url // .__undownloader_original_url // empty)
+        | with_entries(select(.value != null and .value != ""))
+    ' <<<"$obj" >| "$tmp"; then
+    	#        rm --force -- "$tmp"
+        __error "reconstruct_json_file: jq failed"
+        return 1
+    fi
 
-	function __download_urls(){ :; } # the .queue file call these, they just need to exist.
-	function __configure_download(){ :; } # the .queue file call these, they just need to exist.
+    if [[ ! -s "$tmp" ]]; then
+    	#        rm --force -- "$tmp"
+        __error "reconstruct_json_file: jq produced an empty file"
+        return 1
+    fi
 
-	if [[ ! -f "$search_directory/data/$queue_name.queue" ]]; then
-		__info "run undownloader to download the files first"
-		__error "queue %s not found" "$search_directory/data/$queue_name.queue"
-		local_exit_failsafe
-	fi
-	source -- "$search_directory/data/$queue_name.queue" || exit 1
+    mv -- "$tmp" "$dest"
+}
 
-	queue_timestamp="$(stat -c "%Y" -- "$search_directory/data/$queue_name.queue")"
+function search_in_path()
+{
+	local path="$1"
+	local additional_files="${2:-false}"
 
-	__debug  "real__template_name=$__template_name"
-	__debug  "real__regular_expression_configuration_matches=$__regular_expression_configuration_matches"
-
-	view_name="$view_name.$__template_name"
-	__debug "real__view_name=$view_name"
-
-	if [[ -n "$__regular_expression_configuration_matches" ]]; then
-		regex="$__regular_expression_configuration_matches"
+	if $additional_files; then
+		search_regex="(.*/)?[^/]+\\.($(IFS='|'; printf '%s' "${media_extensions[*]}"))$"
 	else
-		regex='^.*\.(mkv|mka)$'
+		search_regex="$regex"
 	fi
 
-	formatters_as_string=""
-	declare -A __field_formatter_cache=()
-
-	if $archive_on_update; then
-		archive_directory="$template_name.archive"
-		mkdir --parents -- "$archive_directory"
-	fi
-
-	view_directory="$view_name"
-	if [[ -d "$view_directory" ]]; then
-		if [[ -f "$view_directory/creation.timestamp" ]]; then
-			view_timestamp="$(stat -c "%Y" -- "$view_directory/creation.timestamp")"
-			if (( "$queue_timestamp" <= "$view_timestamp" )); then
-				__info "View is up to date with queue %s" "$search_directory/data/$queue_name.queue"
-				return 0
-			fi
-		fi
-
-		if $archive_on_update; then
-			__info "Updating view %s" "$(basename "$view_directory")"
-			mv -- "$view_directory" "$archive_directory/$view_name-$template_name-$__current_date" || echo "Warning: Failed to archive $view_directory"
-		else
-			__info "Replacing view %s" "$(basename "$view_directory")"
-			find "$view_directory" -type l -delete
-			find "$view_directory" -type d -empty -delete
-		fi
-	fi
-
-	mkdir --parents -- "$view_directory" || exit 1
-
-	validate_formatters
-
-	file_count=0
-	if [[ -d "$search_directory/files" ]]; then
 	while IFS= read -r -d '' file; do
 		__debug
 		__debug
@@ -828,9 +987,38 @@ function update_view() {
 		ext="${filename##*.}"
 
 		json_file="${file%.*}.info.json"
+		additional_files_json_file="${file%.*}.info.json.reconstructed.json"
+
 		if [[ ! -f "$json_file" ]]; then
-			__warn "%s not found" "$json_file"
-			continue
+			if ! $additional_files; then
+				__warn "%s not found" "$json_file"
+				continue
+			elif [[ ! -f "$additional_files_json_file" ]]; then
+				dirname="$(dirname -- "$file")"
+				path_id="$(basename -- "$dirname")"
+				file_name="$(basename -- "$file")"
+
+				declare -A values=()
+				if get_sources_list_keys_for "path" "$path_id" values; then
+					temp_json_file="$(mktemp)"
+					reconstruct_json_file "$temp_json_file" values
+					json_file="$dirname/${file_name%.*}.info.json.reconstructed.json"
+					mv -- "$temp_json_file" "$json_file"
+				else
+					__warn "Cannot write reconstruct_json_file. KV-Pair %s not found in file %s" "path=$path_id" "$sources_file"
+					#@ fixme
+					continue
+				fi
+			else
+				json_file="$additional_files_json_file"
+			fi
+		else
+			# extend existing json file with attributes from sources list
+			#@todo check sources bag for attributes
+			# cp -- "$json_file" "$additional_files_json_file"
+			# with jq, read "$additional_files_json_file" and write the additional keys from the bag, replace values if necessary (warn on replace)
+			# json_file="$additional_files_json_file"
+			:
 		fi
 
 		if ! handle_file; then
@@ -842,7 +1030,17 @@ function update_view() {
 
 		mkdir --parents -- "$target_dir" || exit 1
 
-		__verbose "Map file %s to %s using %s. formatter" "${file//"$search_directory"/}" "$target_path" "_$formatter_number"
+		if $additional_files; then
+			__verbose "Map additional file %s to %s using %s. formatter" "$file" "$target_path" "_$formatter_number"
+			if ! $__verbose; then
+				__info "Additional File %s: %s" "__$(( additional_file_count+file_count +1 ))" "$target_path"
+			fi
+		else
+			__verbose "Map file %s to %s using %s. formatter" "${file//"$search_directory"/}" "$target_path" "_$formatter_number"
+			if ! $__verbose; then
+				__info "File %s: %s" "__$(( additional_file_count+file_count +1 ))" "$target_path"
+			fi
+		fi
 
 		# guarantee unique link names
 		if [[ -e "$target_file" ]]; then
@@ -863,19 +1061,176 @@ function update_view() {
 
 		path_traversal="$(__to_path_traversal "$target_file")"
 		if ln --symbolic --logical --no-dereference "$path_traversal/$file" "$target_file"; then
-			((file_count++)) ||__expression_may_fail
+			if $additional_files; then
+				((additional_file_count++)) ||__expression_may_fail
+			else
+				((file_count++)) ||__expression_may_fail
+			fi
 		fi
 
-	done < <(find "$search_directory/files" -type f -regextype posix-extended -iregex "$regex" -print0 ||: )
+		local original_url
+		original_url="$(jq -r '.__undownloader_original_url // ""' "$json_file" 2>"/dev/null" || echo "")"
+
+		if [[ -n "$original_url" ]]; then
+			:
+			#local entry_key
+#
+#			entry_key=$(get_entry_index_by_keyvalue "_" "$original_url" || echo "")
+#			manual_search_path="$(get_value "$entry_key" "path" || echo "")"
+#			filename_prefix="$(get_value "$entry_key" "prefix" || echo "")"
+#
+#			if [[ -z "$manual_search_path" ]]; then
+#				#__info "manual search path %s not specified for url %s" "$manual_search_path" "$original_url"
+#				continue
+#			fi
+#			manual_search_path="🔴.downloaded/$manual_search_path"
+#			echo "manual_search_path: $manual_search_path"
+#
+#			if [[ ! -d "$manual_search_path" ]]; then
+#				__warn "manual search path %s does not exist" "$manual_search_path"
+#				continue
+#			fi
+#
+#			__info "Additional files path %s found" "$manual_search_path"
+#
+#			target_file_directory="$(dirname -- "$target_file")"
+#			echo ln --symbolic --logical --no-dereference "$additional_path_traversal/$additional_file" "$target_file_directory/$filename_prefix$additional_filename_newname"
+#			continue
+
+#			#@todo skip this if has run once for a target, not for every .mkv,mka regex matched in dir
+#			while IFS= read -r -d '' additional_file; do
+#				additional_filename="$(basename -- "$additional_file")"
+#				additional_path_traversal="$(__to_path_traversal "$target_file_directory/$filename_prefix$additional_filename")"
+#
+#				if [[ -e "$target_file_directory/$filename_prefix$additional_filename" && ! -h "$target_file_directory/$filename_prefix$additional_filename" ]]; then
+#					__warn "Replacing undownloaded file with downloaded file %s, use prefix in .sources file" "$target_file_directory/$filename_prefix$additional_filename"
+#					continue
+#				fi
+#				__info "Additional file %s provided into view" "$filename_prefix$additional_filename"
+#				local additional_filename_newname
+#				additional_filename_newname="$(field_format__title "$additional_filename")"
+#				if ln --symbolic --logical --no-dereference "$additional_path_traversal/$additional_file" "$target_file_directory/$filename_prefix$additional_filename_newname"; then
+#					((additional_file_count++)) ||__expression_may_fail
+#				fi
+#			done < <(find "$manual_search_path" -type f -regextype posix-extended -iregex "$search_regex" -print0 ||: )
+		fi
+
+	done < <(find "$path/" -type f -regextype posix-extended -iregex "$search_regex" -print0 ||: )
+}
+
+ix=0
+function update_view() {
+	local view_name="$1"
+
+	__debug "view_name=$view_name"
+
+	if [[ ! -f "$view_name.view" ]]; then
+		__error "View %s not found" "$view_name.view"
+		local_exit_failsafe
+	fi
+
+	source -- "$view_name.view" || exit 1
+
+	handle_source_selector "$sources_file" "$view_name"
+
+	detect_filesystem "."
+
+	search_directory="🔴.undownloaded"
+
+	function __download_urls() { :; } # the .queue file call these, they just need to exist.
+	function __configure_download() { :; } # the .queue file call these, they just need to exist.
+
+	if [[ ! -f "$search_directory/data/$queue_name.queue" ]]; then
+		if [[ ! -s "$sources_file" ]]; then
+			__warn "queue %s not found, sources file is empty" "$search_directory/data/$queue_name.queue"
+			return
+		fi
+		__info "run undownloader to download the files first"
+		__error "queue %s not found" "$search_directory/data/$queue_name.queue"
+		local_exit_failsafe
+	fi
+	source -- "$search_directory/data/$queue_name.queue" || exit 1
+
+	queue_timestamp="$(stat -c "%Y" -- "$search_directory/data/$queue_name.queue")"
+
+	__debug  "real__template_name=$__template_name"
+	__debug  "real__regular_expression_configuration_matches=$__regular_expression_configuration_matches"
+
+	#folder_view_name="■ $view_name.$__template_name"
+	__debug "real__view_name=$view_name"
+
+	if [[ -n "$view_regular_expression_configuration_matches" ]]; then
+		regex="$view_regular_expression_configuration_matches"
+	elif [[ -n "$__regular_expression_configuration_matches" ]]; then
+		regex="$__regular_expression_configuration_matches"
+	else
+		regex='^.*\.(mkv|mka)$'
+	fi
+
+	formatters_as_string=""
+	declare -A __field_formatter_cache=()
+
+	if $archive_on_update; then
+		archive_directory="$template_name.archive"
+		mkdir --parents -- "$archive_directory"
+	fi
+
+	view_directory="■ $view_name.$__template_name"
+	__debug "view_directory=$view_directory"
+
+	if [[ -d "$view_directory" ]]; then
+		if ! $force_view_update && [[ -f "$view_directory/creation.timestamp" ]]; then
+			view_generation_timestamp="$(stat -c "%Y" -- "$view_directory/creation.timestamp")"
+			view_timestamp="$(stat -c "%Y" -- "$view_name.view")"
+			if (( "$queue_timestamp" <= "$view_generation_timestamp" && "$view_timestamp" <= "$view_generation_timestamp" )); then
+				__info "View is up to date with queue %s" "$search_directory/data/$queue_name.queue"
+				return 0
+			fi
+		fi
+
+		if $archive_on_update; then
+			__info "Updating view %s" "$(basename "$view_directory")"
+			mv -- "$view_directory" "$archive_directory/$view_name-$template_name-$__current_date" || echo "Warning: Failed to archive $view_directory"
+		else
+			__info "Replacing view %s" "$(basename "$view_directory")"
+			find "$view_directory/" -type l -delete
+			find "$view_directory/" -type d -empty -delete
+		fi
+	fi
+
+	mkdir --parents -- "$view_directory" || exit 1
+
+	validate_formatters
+
+	# parse_sources_file "$sources_file"
+
+	if $print_sources_files; then
+		print_tree
+		exit 0
+	else
+		$__debug && print_tree
+	fi
+
+	file_count=0
+	additional_file_count=0
+	if [[ -d "$search_directory/files/" ]]; then
+		search_in_path "$search_directory/files/" false
+	fi
+
+	search_directory="🔴.downloaded"
+	if [[ -d "$search_directory/" ]]; then
+		search_in_path "$search_directory/" true
 	fi
 
 	__info
-	__info "View %s contains %s files." "$view_name" "$file_count"
+	__info "View %s contains %s files and %s additional files." "$view_name" "$file_count" "$additional_file_count"
+
+	echo -n "$queue_timestamp" >| "$view_directory/creation.timestamp"
 
 	if (( file_count == 0 )); then
-		if [[ -d "$view_directory" ]]; then
-			find "$view_directory" -type l -delete
-			find "$view_directory" -type d -empty -delete
+		if [[ -d "$view_directory/" ]]; then
+			find "$view_directory/" -type l -delete
+			find "$view_directory/" -type d -empty -delete
 		fi
 	else
 		{
@@ -895,111 +1250,198 @@ function update_view() {
 		} >| "$view_directory/README.$view_name.markdown"
 	fi
 
-	echo -n "$queue_timestamp" >| "$view_directory/creation.timestamp"
+	write_playlist "$view_directory" "Playlists"
+	write_playlist "$view_directory" "Albums"
+	write_playlist "$view_directory" "Channel"
+	write_playlist "$view_directory" "Domain"
 }
 
-sources_files=( *".sources" )
+function create_view() {
+	__debug "sources_file=$sources_file"
 
-if [[ -n "$input_sources_name" ]]; then
-	if (( ${#sources_files[@]} == 0 )); then
-		input_sources_name_file_extension="${input_sources_name##*.}"
-		global_sources_file="$application_var_directory/sources/$input_sources_name_without_file_extension.sources"
-		if [[ "$input_sources_name_file_extension" != "sources" ]]; then
-			__error "global sources file %s must be specified with a filename without .sources file extension." "$global_sources_file"
-			local_exit_failsafe
-		fi
-		if [[ -f "$global_sources_file" ]]; then
-			sources_file="$global_sources_file"
-		else
-			__error "global sources file %s does not exist" "$global_sources_file"
-			local_exit_failsafe
-		fi
-	else
-		sources_file="$input_sources_name"
-	fi
-
-	if [[ ! -f "$sources_file" ]]; then
-		__error "sources file %s does not exist" "$sources_file"
+	if [[ ! -f "$application_var_directory/view-templates/$default_view_name.view" ]]; then
+		__error "default view %s not found" "$application_var_directory/view-templates/$default_view_name.view"
 		local_exit_failsafe
 	fi
 
-	sources_file="$(realpath --quiet -- "$sources_file")"
+	views_files=( *".view" )
+	views=()
 
-	directory="$(dirname -- "$sources_file")"
-	cd -- "$directory/" || exit 1
-else
-	sources_file=""
-	if (( ${#sources_files[@]} == 0 )); then
-		__error "no sources file was found in current directory"
-		local_exit_failsafe
-	elif (( ${#sources_files[@]} == 1 )); then
-		sources_file="${sources_files[0]}"
-	else
-		PS3="Which source file shall be used to generate a view?"
+	if $update_all_views; then
+		if [[ -n "$input_view_name" ]]; then
+			if [[ ! -f "$input_view_name.view" ]]; then
+				__warn "View %s not found" "$input_view_name.view"
+				local_exit_failsafe
+			fi
 
-		select name in "${sources_files[@]}"; do
-			for reply in $REPLY; do
-				if [[ "$reply" =~ ^[1-9]+[0-9]*$ ]]; then
-					if (( ${#sources_files[@]} <= reply-1 )); then
-						continue
-					fi
+			__warn "both --update-all and input view %s are given. Action: all views are updated, the input views is ignored" "$input_view_name"
+		fi
 
-					sources_file="${sources_files[reply-1]}"
-					if [[ -n "$sources_file" ]]; then
-						 break 2
-					fi
-				fi
-			done
+		for view_file in "${views_files[@]}"; do
+			view_name="$(basename -- "$view_file")"
+			view_name="${view_name%%.*}"
+			views+=( "$view_name" )
 		done
-	fi
-fi
-
-__debug "sources_file=$sources_file"
-
-if [[ ! -f "$application_var_directory/view-templates/$default_view_name.view" ]]; then
-	__error "default view %s not found" "$application_var_directory/view-templates/$default_view_name.view"
-	local_exit_failsafe
-fi
-
-views_files=( *".view" )
-views=()
-
-if $update_all_views; then
-	if [[ -n "$input_view_name" ]]; then
-		if [[ ! -f "$input_view_name.view" ]]; then
-			__warn "view %s not found" "$input_view_name.view"
-			local_exit_failsafe
+	else
+		if [[ -n "$input_view_name" ]]; then
+			view_name="$input_view_name"
+		else
+			view_name="$(basename -- "$sources_file")"
+			view_name="${view_name%%.*}"
 		fi
 
-		__warn "both --update-all and input view %s are given. Action: all views are updated, the input views is ignored" "$input_view_name"
-	fi
-
-	for view_file in "${views_files[@]}"; do
-		view_name="$(basename -- "$view_file")"
-		view_name="${view_name%%.*}"
-		views+=( "$view_name" )
-	done
-else
-	if [[ -n "$input_view_name" ]]; then
-		if [[ ! -f "$input_view_name.view" ]]; then
-			__warn "view %s not found" "$input_view_name.view"
+		if [[ ! -f "$view_name.view" ]]; then
+			__warn "View %s not found" "$view_name.view"
 
 			if __confirm "Shall I generate a default view file (template name: '$default_view_name') for this unit?"; then
-				cp -- "$application_var_directory/view-templates/$default_view_name.view" "$input_view_name.view" || exit 1
+				cp -- "$application_var_directory/view-templates/$default_view_name.view" "$view_name.view" || exit 1
 			else
 				__info "exit"
 				local_exit_failsafe
 			fi
 		fi
 
-		views+=( "$input_view_name" )
-	else
-		view_name="$(basename -- "$sources_file")"
-		view_name="${view_name%%.*}"
 		views+=( "$view_name" )
 	fi
-fi
 
-for view_name in "${views[@]}"; do
-	( update_view "$view_name" )
-done
+	for view_name in "${views[@]}"; do
+		( update_view "$view_name" )
+	done
+}
+
+function write_playlist() {
+	[[ ! -d "$1/$2/" ]] && return 0
+
+	playlist="$1/$2.m3u8"
+	{
+		printf '%s\n' "#EXTM3U"
+
+		find_args=()
+		for ext in "${media_extensions[@]}"; do
+			ext="${ext#.}"
+			if (( ${#find_args[@]} > 0 )); then
+				find_args+=(-o)
+			fi
+			find_args+=(-iname "*.${ext}")
+		done
+
+		find "$1/$2" -type l \( "${find_args[@]}" \) -print0 | sort -z |
+			while IFS= read -r -d '' file; do
+				file="${file#./}"
+				printf '%s\n' "#EXTINF:-1,${file##*/}"
+				printf '%s\n' "${file#*/}"
+			done
+	} >| "$playlist"
+}
+
+sources_files=( *".sources" )
+
+if $update_all_sources; then
+	if [[ -n "$input_sources_name" ]]; then
+		if (( ${#sources_files[@]} == 0 )); then
+			input_sources_name_file_extension="${input_sources_name##*.}"
+			global_sources_file="$application_var_directory/sources/$input_sources_name_without_file_extension.sources"
+			if [[ "$input_sources_name_file_extension" != "sources" ]]; then
+				__error "global sources file %s must be specified with a filename without .sources file extension." "$global_sources_file"
+				local_exit_failsafe
+			fi
+			if [[ -f "$global_sources_file" ]]; then
+				sources_file="$global_sources_file"
+			else
+				__error "global sources file %s does not exist" "$global_sources_file"
+				local_exit_failsafe
+			fi
+		else
+			sources_file="$input_sources_name"
+		fi
+
+		if [[ ! -f "$sources_file" ]]; then
+			__error "sources file %s does not exist" "$sources_file"
+			local_exit_failsafe
+		fi
+
+		sources_file="$(realpath --quiet -- "$sources_file")"
+		directory="$(dirname -- "$sources_file")"
+		cd -- "$directory/" || exit 1
+		parse_sources_file "$sources_file"
+		create_view "$sources_file"
+	else
+		sources_file=""
+		if (( ${#sources_files[@]} == 0 )); then
+			__error "no sources files were found in current directory"
+			local_exit_failsafe
+		fi
+
+		for sources_file in "${sources_files[@]}"; do
+			__info "Loading source %s" "$sources_file"
+			parse_sources_file "$sources_file"
+		done
+
+		__info "Creating view (non-global)"
+		#sources_file="$(realpath --quiet -- "$sources_file")"
+		#directory="$(dirname -- "$sources_file")"
+		#cd -- "$directory/" || exit 1
+		create_view "$sources_file"
+	fi
+else
+	if [[ -n "$input_sources_name" ]]; then
+		if (( ${#sources_files[@]} == 0 )); then
+			input_sources_name_file_extension="${input_sources_name##*.}"
+			global_sources_file="$application_var_directory/sources/$input_sources_name_without_file_extension.sources"
+			if [[ "$input_sources_name_file_extension" != "sources" ]]; then
+				__error "global sources file %s must be specified with a filename without .sources file extension." "$global_sources_file"
+				local_exit_failsafe
+			fi
+			if [[ -f "$global_sources_file" ]]; then
+				sources_file="$global_sources_file"
+			else
+				__error "global sources file %s does not exist" "$global_sources_file"
+				local_exit_failsafe
+			fi
+		else
+			sources_file="$input_sources_name"
+		fi
+
+		if [[ ! -f "$sources_file" ]]; then
+			__error "sources file %s does not exist" "$sources_file"
+			local_exit_failsafe
+		fi
+
+		sources_file="$(realpath --quiet -- "$sources_file")"
+		directory="$(dirname -- "$sources_file")"
+		cd -- "$directory/" || exit 1
+		parse_sources_file "$sources_file"
+		create_view "$sources_file"
+	else
+		sources_file=""
+		if (( ${#sources_files[@]} == 0 )); then
+			__error "no sources file was found in current directory"
+			local_exit_failsafe
+		elif (( ${#sources_files[@]} == 1 )); then
+			sources_file="${sources_files[0]}"
+		else
+			PS3="Which source file shall be used to generate a view?"
+
+			select name in "${sources_files[@]}"; do
+				for reply in $REPLY; do
+					if [[ "$reply" =~ ^[1-9]+[0-9]*$ ]]; then
+						if (( ${#sources_files[@]} <= reply-1 )); then
+							continue
+						fi
+
+						sources_file="${sources_files[reply-1]}"
+						if [[ -n "$sources_file" ]]; then
+							 break 2
+						fi
+					fi
+				done
+			done
+		fi
+
+		sources_file="$(realpath --quiet -- "$sources_file")"
+		directory="$(dirname -- "$sources_file")"
+		cd -- "$directory/" || exit 1
+		parse_sources_file "$sources_file"
+		create_view "$sources_file"
+	fi
+fi

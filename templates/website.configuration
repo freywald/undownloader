@@ -1,0 +1,107 @@
+#!/bin/bash
+
+# AUDIO+VIDEO.CONFIGURATION
+#
+# This configuration is dedicated to both video with audio and audio-only extraction in one template.
+# For video content it merges separate video and audio streams and remuxes the result into mkv container.
+# For audio content it extracts audio and remuxes it into mka container.
+# It downloads and embeds thumbnails as png files.
+# It downloads English manual and auto-generated subtitles, converts them to srt format, and embeds them.
+# It embeds full metadata, chapters, and the complete info json into the output file.
+# It writes description text files, info json files, and playlist metafiles.
+# It applies 5-level ID-based directory sharding using the first 10 characters of the media ID.
+
+# CONFIGURATION
+__configure_download \
+`# run wget with these options:…` \
+wget \
+--follow-tags=a  \
+--reject '*.js,*.css,*.ico,*.txt,*.gif,*.jpg,*.jpeg,*.png,*.mp3,*.pdf,*.tgz,*.flv,*.avi,*.mpeg,*.iso' \
+--ignore-tags=img,link,script \
+--header="Accept: text/html" \
+--no-clobber --convert-links --random-wait --recursive --adjust-extension --execute robots=off --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/32.0.1700.102 Safari/537.36" --accept html \
+--directory-prefix=files --wait 10 --mirror --no-parent \
+--no-if-modified-since --domain=mcstories.com -- "$1"
+
+yt-dlp \
+--live-from-start \
+--no-restrict-filenames \
+--compat-options no-clean-infojson \
+--output-na-placeholder "" \
+`# only last __configure_download call should use a download archive because the same .memory file is used. --no-download-archive will disable all download-archives, except if --force-download is used.` \
+--no-download-archive --quiet \
+`# show progress` \
+--console-title --progress --newline \
+`# output file template` \
+--parse-metadata "description:(?s)(?P<meta_comment>.+)" \
+-o "%(webpage_url_domain)s/media/%(channel_id|uploader_id)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/media/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(id)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+`# quality and file format` \
+--merge-output-format mkv --remux-video mkv \
+--post-overwrites \
+`# thumbnails` \
+--write-thumbnail \
+--convert-thumbnails png \
+--embed-thumbnail \
+`# subtitles` \
+--sub-lang "en-en,en-US,en-orig" \
+--write-auto-subs \
+--write-sub \
+--convert-subs srt \
+--embed-subs \
+`# embed files` \
+--embed-metadata \
+--embed-info-json \
+--embed-chapters \
+--write-description \
+--write-info-json \
+--write-playlist-metafiles \
+
+# CONFIGURATION
+__configure_download \
+`# run yt-dlp with these options:…` \
+yt-dlp \
+--live-from-start \
+--no-restrict-filenames \
+--compat-options no-clean-infojson \
+--output-na-placeholder "" \
+`# show progress` \
+--console-title --progress --newline \
+`# output file template` \
+--parse-metadata "description:(?s)(?P<meta_comment>.+)" \
+-o "%(webpage_url_domain)s/media/%(channel_id|uploader_id)s/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "%(webpage_url_domain)s/media/%(id.0:2)s/%(id.2:4)s/%(id.4:6)s/%(id.6:8)s/%(id.8:10)s/%(id)s/%(id)s.%(ext)s" \
+-o "pl_video:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(id)s.%(ext)s" \
+-o "pl_thumbnail:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_description:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+-o "pl_infojson:%(webpage_url_domain)s/playlists/%(playlist_id.2:4)s/%(playlist_id.4:6)s/%(playlist_id.6:8)s/%(playlist_id.8:10)s/%(playlist_id.10:12)s/%(playlist_id)s/%(playlist_id)s.%(ext)s" \
+`# quality and file format` \
+--extract-audio \
+--remux mka \
+`# thumbnails` \
+--write-thumbnail \
+--convert-thumbnails png \
+--embed-thumbnail \
+`# subtitles` \
+--sub-lang "en-en,en-US,en-orig" \
+--write-auto-subs \
+--write-sub \
+--convert-subs srt \
+--embed-subs \
+`# embed files` \
+--embed-metadata \
+--embed-info-json \
+--embed-chapters \
+--write-description \
+--write-info-json \
+--write-playlist-metafiles \
+
+__regular_expression_configuration_matches='^.*\.(html|htm)$'
+
+__template_name="${BASH_SOURCE[0]}"
+__template_name="$(basename -- "${__template_name%%.*}")"
+

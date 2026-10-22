@@ -1,9 +1,19 @@
 #!/bin/bash
 
+#tag each download with source file unit name
+#music.video-not-interesting.audio+video => video-not-interesting
+#and via comment in sources linklist
+## categorization=video-not-interesting (from sources + unit name + other sources)
+#then in the view, allow {{category=video-not-interesting}} (only from sources) to filter music
+#or {{unit=video-not-interesting}} (only from file name)
+
 source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../")/library/base" || exit 1
 __set_script_path
 __enable_error_handler
 function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+HANDLER_ERROR_FILE="$(mktemp)" || exit 1
+export HANDLER_ERROR_FILE
 
 source -- "$__script_path/library/main" || exit 1
 
@@ -14,18 +24,19 @@ if (( $? != 4 )); then
 	exit 1
 fi
 
-#__quiet=true
-#__debug=true
-#__verbose=true
-
+print_sources_files=false
 update_all_sources=false
+mode=""
 forwarded_parameters=()
 given_files=()
 
-long_options="run,view,force-download,verbose,quiet,debug,simulate,fetch,update,reset,forget-downloads,ban-evasion,comments,update-all,from-sources-file::,target-directory::"
+declare -gA attached_queues
+attached_queues=()
+
+long_options="view,print-sources,force-view-update,force-download,filtered-queue,fetch-source-updates,verbose,quiet,debug,simulate,fetch,update,fast-update,reset,forget-downloads,ban-evasion,comments,all,update-all,from-sources-file::,target-directory::"
 original_program_arguments=("$@")
 
-parsed_options2=$(getopt --options="::" --longoptions="$long_options" --name "$0" -- "$@") ||__expression_may_fail
+parsed_options2=$(getopt --options="pau::" --longoptions="$long_options" --name "$0" -- "$@") ||__expression_may_fail
 # shellcheck disable=SC2128
 
 eval "set -- $parsed_options2"
@@ -37,12 +48,20 @@ len="${#parsed_options[@]}"
 i=0
 while (( i<len )); do
 	case "${parsed_options[i]}" in
-		--run)
-			:;;
+		--all)
+			update_all_sources=true
+			;;
 		--view)
 			run_view=true
 			;;
+		--print-sources | -p)
+			print_sources_files=true
+			;;
+		--force-view-update)
+			force_view_update=true
+			;;
 		--update-all)
+			force_view_update=true
 			update_all_sources=true
 			;;
 		--comments)
@@ -51,21 +70,69 @@ while (( i<len )); do
 		--ban-evasion)
 			ban_evasion=true
 			;;
-		--force-download)
-			force_download=true
-			;;
 		--simulate)
 			simulate=true
 			;;
-		--fetch)
+		--fetch) # fetch = creates a new input queue from sources. Without, the input queue, if it exists, won't be updated from source. If there is no input queue yet, it is always created even without --fetch. Keeps reading from outdated cache entries for fast undownloads.
+			[[ -n "$mode" ]] && __error "--fetch is exclusive with specified argument --%s" "$mode"
+			mode="fetch"
 			fetch=true
+			#filtered_queue=false #default, can be additionally applied
+			ignore_memory=false #default
+			clean_outdated_cache=false #default
+			video_cache_expires=false #default
+			other_cache_expires=false #default
 			;;
-		--reset|--update)
+		--fetch-source-updates | -a) # like fetch, but filters queue strongly by previous downloads and tries to pull in the updates of sources fast. Keeps reading from outdated cache entries for fast undownloads.
+			[[ -n "$mode" ]] && __error "--fetch-source-updates is exclusive with specified argument --%s" "$mode"
+			mode="fetch-source-updates"
 			fetch=true
+			filtered_queue=true
+			ignore_memory=false #default
+			clean_outdated_cache=false #default
+			video_cache_expires=false #default
+			other_cache_expires=true
+			#forwarded_parameters+=( "--match-filter=!is_live" )
+			;;
+		--update) # like fetch, additionally it continues or retries previous downloads and cleans outdated cache entries
+			[[ -n "$mode" ]] && __error "--update is exclusive with specified argument --%s" "$mode"
+			mode="update"
+			fetch=true
+			#filtered_queue=false #default, can be additionally applied
+			ignore_memory=true
+			clean_outdated_cache=true
+			video_cache_expires=false #default
+			other_cache_expires=false #default
+			;;
+		--fast-update | -u) # like update, additionally it filters the queue strongly by previous downloads to speed up the undownloads.
+			[[ -n "$mode" ]] && __error "--fast-update is exclusive with specified argument --%s" "$mode"
+			mode="fast-update"
+			fetch=true
+			filtered_queue=true
+			ignore_memory=true
+			clean_outdated_cache=true
+			video_cache_expires=false #default
+			other_cache_expires=false #default
+			;;
+		--reset)
+			[[ -n "$mode" ]] && __error "--reset is exclusive with specified argument --%s" "$mode"
+			mode="reset" # like update, additionally it removes all memory of previous downloads and cleans outdated cache entries.
+			fetch=true
+			#filtered_queue=false #default, can be additionally applied, but doesn't seem to make much sense
+			ignore_memory=true
+			clean_outdated_cache=true
+			video_cache_expires=true
+			other_cache_expires=false #default
 			forget_downloads=true
+			;;
+		--force-download)
+			force_download=true
 			;;
 		--forget-downloads)
 			forget_downloads=true
+			;;
+		--filtered-queue)
+			filtered_queue=true
 			;;
 		--quiet)
 			__quiet=true
@@ -96,7 +163,9 @@ while (( i<len )); do
 		--)
 			;;
 		*)
-			input_parameters+=("${parsed_options[i]}")
+			if [[ -n "${parsed_options[i]}" ]]; then
+				input_parameters+=("${parsed_options[i]}")
+			fi
 			;;
 	esac
 	((i++)) ||__expression_may_fail
@@ -186,13 +255,13 @@ else
 	forget_downloads=false
 fi
 if $__verbose && $__quiet; then
-	echo>&2 "ERROR! Program options '--verbose' and '--quiet' are mutually exclusive."
-	exit 1
+	__error "ERROR! Program options '--verbose' and '--quiet' are mutually exclusive."
+	local_exit_failsafe
 fi
 
 if $forget_downloads && $force_download; then
-	echo>&2 "ERROR! Program options '--forget-downloads' and '--force-download' are mutually exclusive."
-	exit 1
+	__error "ERROR! Program options '--forget-downloads' and '--force-download' are mutually exclusive."
+	local_exit_failsafe
 fi
 
 if [[ -n "$from_sources_file" ]]; then
@@ -205,9 +274,9 @@ elif (( $# == 0 )); then
 	if [[ -z "$from_sources_file" ]]; then
 		routes_files=( "./"*".sources" )
 		if (( ${#routes_files[@]} == 0 )); then
-			echo>&2 -e "ERROR: No route definition file found! (search expression: *.sources)"
+			__error "ERROR: No route definition file found! (search expression: *.sources)"
+			local_exit_failsafe
 
-			exit 1
 		elif (( ${#routes_files[@]} == 1 )); then
 			routes_file="${routes_files[0]}"
 		else
@@ -236,9 +305,9 @@ elif (( $# == 0 )); then
 	fi
 
 	if [[ ! -f "$routes_file" ]]; then
-		echo>&2 -e "ERROR: route definition file '$routes_file' NOT found!"
+		__error "ERROR: route definition file '$routes_file' NOT found!"
 
-		exit 1
+		local_exit_failsafe
 	fi
 
 	if [[ -n "$routes_file" ]]; then
@@ -359,6 +428,7 @@ function run_queue() {
 	# shellcheck source=/dev/null
 	source -- "$queue_file" || exit 1
 
+	data_counter=0
 	data_length_counter="${#data[@]}"
 	data_items_processed=0
 	data_items_ignored=0
@@ -366,7 +436,8 @@ function run_queue() {
 	data_items_success=0
 	data_bag_incomplete=false
 
-	for line in "${data[@]}"; do	
+	for line in "${data[@]}"; do
+		((data_counter++)) ||__expression_may_fail
 		((data_length_counter--)) ||__expression_may_fail
 
 		# insert marker found, continue
@@ -378,12 +449,12 @@ function run_queue() {
 		# stop marker found, exit
 		if [[ "${line:0:1}" == "!" ]]; then
 			if $data_bag_incomplete; then
-				echo>&2 "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO WIDE AT DATA ROW $((data_items_processed-data_items_ignored))"
-				exit 1
+				__error "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO WIDE AT DATA ROW $((data_items_processed-data_items_ignored))"
+				local_exit_failsafe
 			fi
 			((data_items_ignored--)) ||__expression_may_fail
 
-			echo -e "\n\n"
+			! $__quiet && echo -e "\n\n"
 			! $__quiet && echo -e "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
 			! $__quiet && echo -e "██"
 
@@ -410,6 +481,7 @@ function run_queue() {
 			! $__quiet && echo -e "██"
 			! $__quiet && echo -e "███████████████████████████████████████████████████████████████████████████████"
 			! $__quiet && echo -e "\n\n"
+			$__quiet && echo -e "\n"
 
 			break
 		fi
@@ -432,21 +504,22 @@ function run_queue() {
 			! $__quiet && echo -e "██"
 			! $__quiet && echo -e "███████████████████████████████████████████████████████████████████████████████"
 			! $__quiet && echo -e "\n\n"
+			$__quiet && echo -e "\n"
 		fi
 
 		if $data_bag_line_marker_wideness_search_start; then
 			data_bag_line_marker_wideness_search_start=false
 
 			if [[ ! "$line" =~ ^[0-9]+$ ]] ; then
-			   echo>&2 "ERROR! MALFORMED QUEUE DATA BAG: INVALID WIDENESS VALUE AT DATA ROW $((data_items_processed-data_items_ignored))"
-			   exit 1
+				__error "ERROR! MALFORMED QUEUE DATA BAG: INVALID WIDENESS VALUE AT DATA ROW $((data_items_processed-data_items_ignored))"
+				local_exit_failsafe
 			fi
 			z=$((line+0)) ||__expression_may_fail
 			data_bag_line_wideness="$z"
 			data_bag_item_count=1
 			data_bag=()
 
-			continue
+			continue # new data item line started with wideness prefix
 		else
 			((data_bag_item_count++)) ||__expression_may_fail
 
@@ -464,30 +537,66 @@ function run_queue() {
 
 			data_bag_incomplete=false
 
+			previous_download=false
+			original_url=""
+			metadata_attached_queue=""
+
 			reversed_data_bag=()
 			for (( i=${#data_bag[@]}-1; i>=0; i-- )); do
 				local value="${data_bag[i]}"
 				__debug "%s" "data_bag=$value"
+				__info "%s" "DD $force_download"
 				if $force_download && [[ -f "data/$queue_name.queue" ]] && [[ "$value" = "--download-archive="* ]]; then
-					echo "force_download is active, removing $value"
+					__info "force_download is active, removing %s" "$value"
 					: # filter parameter instance '--download-archive' in '--from-sources-file'-mode, so the queue archive index file can be ignored thus '--force-download' can be enforced properly
 				elif [[ "$value" = "--metadata-"* ]]; then
-					: # filter --metadata
+					if [[ "$value" = "--metadata-in-memory="* ]]; then
+						[[ "$value" == "--metadata-in-memory=true" ]] && previous_download=true
+						#
+					elif [[ "$value" = "--metadata-original-url="* ]]; then
+						original_url="${value#*"="}"
+					elif [[ "$value" = "--metadata-attach-queue="* ]]; then
+						metadata_attached_queue="${value#*"="}"
+					else
+						: # filter all --metadata from queue processing
+					fi
 				else
 					reversed_data_bag+=("$value")
 				fi
 			done
 
-			local z
-			z="$((${#reversed_data_bag[@]}-1))" ||__expression_may_fail
-			url_cursor="$z"
+
+
+			local last_position
+			last_position="$((${#reversed_data_bag[@]}-1))" ||__expression_may_fail
+			url_cursor="$last_position"
 
 			if (( url_cursor < 0 )); then
-				echo>&2 "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO NARROW AT DATA ROW $((data_items_processed-data_items_ignored))"
-				exit 1
+				__error "ERROR! MALFORMED QUEUE DATA BAG: ITEM WINDOW TOO NARROW AT DATA ROW $((data_items_processed-data_items_ignored))"
+				local_exit_failsafe
 			fi
 
 			url="${reversed_data_bag[$url_cursor]}"
+
+			if $previous_download && ! $ignore_memory; then
+				__warn "URL %s is skipped from queue, it has previously been downloaded successfully." "$url"
+				reversed_data_bag=()
+				data_bag_line_marker_wideness_search_start=true
+				continue
+			fi
+
+			if [[ -n "$metadata_attached_queue" ]]; then
+				__info "URL %s is skipped from queue, because it resolves to an attached queue %s." "$url" "$metadata_attached_queue"
+
+				reversed_data_bag=()
+				data_bag_line_marker_wideness_search_start=true
+
+				local metadata_attached_queue_name="${metadata_attached_queue%%":"*}"
+				local metadata_attached_queue_file="${metadata_attached_queue#*":"}"
+				attached_queues["$metadata_attached_queue_name"]="$metadata_attached_queue_file"
+
+				continue
+			fi
 
 			for forward_parameter in "${forwarded_parameters[@]}"; do
 				reversed_data_bag+=( "$forward_parameter" )
@@ -553,7 +662,9 @@ function run_queue() {
 
 			queue_parameters+=("--paths=$download_directory") # yt-dlp-specific
 
-			queue_parameters+=("${base_configuration[@]}")
+			mapfile -d '' -t site_configuration < <(determinate_site_configuration "$url")
+
+			queue_parameters+=("${site_configuration[@]}" "--no-playlist")
 
 			((cursor+=wideness)) ||__expression_may_fail
 
@@ -573,13 +684,18 @@ function run_queue() {
 
 			return_value=0
 			if ! $simulate; then
-				$__debug && set -x
+				if [[ -n "$original_url" ]]; then
+					hook_url="$original_url"
+				else
+					hook_url="$url"
+				fi
 
+				$__debug && set -x
 				# Executes target program!
 				# The first argument of queue_parameters is the program executable name: '__configure_download yt-dlp […]'
-				2> >(tee -a  -- "$error_log_file" | tee -a  -- "$queue_log_file" >&2) "${queue_parameters[@]}" "${current_data_bag[@]}" | tee -a  -- "$queue_log_file" ||__expression_may_fail
+				2> >(tee -a  -- "$error_log_file" | tee -a  -- "$queue_log_file" >&2) "${queue_parameters[@]}" --exec "before_dl:add_original_url_hook %(original_url)q %(filepath,_filename|)q ${hook_url@Q}" "${current_data_bag[@]}" | tee -a  -- "$queue_log_file" | tee -a  -- "$queue_log_file" || __expression_FF
 				return_value=$?
-
+				__enable_error_handler
 				$__debug && set +x
 			fi
 
@@ -625,22 +741,34 @@ function run_queue() {
 	[[ ! -f "$application_log_file" ]] && ln -nfs -- "data/logs/application.log" "application.log" ||__expression_may_fail
 	[[ ! -f "$error_log_file" ]] && ln -nfs -- "data/logs/error.log" "error.log" ||__expression_may_fail
 
-	if (( data_items_success == 0 )); then
-		old_queue="$base_directory/data/archive/$(basename -- "$local_queue").$__current_date.backup"
-		if $fetch && [[ -f "$old_queue" ]]; then
-			mv -- "$old_queue" "$local_queue"
-			__info "Queue status is unchanged, nothing to do."
+	if (( data_items_success > 0 )); then
+		if $regenerate_queue; then
+			[[ -f "$local_queue" ]] && mv -- "$local_queue" "$base_directory/data/archive/$(basename -- "$local_queue").backup.$__current_date.replaced-by-update.backup"
+			mv -- "$queue_file" "$local_queue"
+			#__debug "%s" "mv -- $queue_file $local_queue"
+			__info "Moved queue file %s" "mv -- $queue_file $local_queue"
 		fi
+
+		__info "Queue status is changed."
+	else
+		if $regenerate_queue; then
+			[[ -f "$local_queue" ]] && mv -- "$local_queue" "$base_directory/data/archive/$(basename -- "$local_queue").backup.$__current_date.replaced-by-update.backup"
+			mv -- "$queue_file" "$local_queue"
+			#__debug "%s" "mv -- $queue_file $local_queue"
+			__info "Moved queue file %s" "mv -- $queue_file $local_queue"
+		fi
+
+		__info "Queue status is unchanged, nothing to do."
 	fi
 }
 
 function enqueue_download_from_file()
 {
-	local force_download=false
+	local force_download1=false
 
 	for option in "$@"; do
 		if [[ "$option" =~ "--force" ]]; then
-			force_download=true
+			force_download1=true
 			shift ||__expression_may_fail
 			break
 		fi
@@ -659,6 +787,7 @@ function enqueue_download_from_file()
 	$__verbose && additional_arguments="$additional_arguments--verbose "
 	$__debug && additional_arguments="$additional_arguments--debug "
 	$__quiet && additional_arguments="$additional_arguments--quiet "
+	$ignore_memory && additional_arguments="$additional_arguments--ignore_memory "
 
 	queue_full_file_path="data/archive/$queue_name-$__current_date.queue"
 	cp -- "$__script_path/templates/$template_name.template" "$queue_full_file_path"
@@ -668,26 +797,148 @@ function enqueue_download_from_file()
 
 	local url
 	while read -r url; do
-		if [[ "${url:0:2}" == "##" ]]; then
+		if [[ "${url:0:6}" == "# STOP" ]]; then
 			stop_marker_found=true
-			continue
+			break
 		fi
 
-		if [[ "$url" == "" || "${url:0:1}" == "#" ]] || $stop_marker_found; then
+		if [[ "$url" == "" || "$url" =~ ^[#[:space:]]+(.*)$ ]] || $stop_marker_found; then
 			continue
 		fi
 
 		if [[ -v processed_lines["$url"] ]]; then
-			__info "Duplicate url %s, ignored" "$url"
+			__info "Duplicate url %s is ignored" "$url"
 			continue
 		fi
 
 		processed_lines["$url"]=1
 
-		if $force_download; then
-			enqueue-download $additional_arguments "--download-archive=$download_index" "${template_name}:$queue_full_file_path" "$url"
+#
+##
+### Paste the functions above here
+##
+##echo "=== Test: Hashmap Round-Trip with Newlines ==="
+##
+##declare -A config
+##
+##config[url]="https://youtube.com/watch?v=abc123"
+##config[title]=$'My Video\nwith actual newlines'
+##config[description]=$'Line 1\nLine 2\nLine 3'
+##config[channel]="UCxxxxxxxxxxxxxxxx"
+##config[empty]=""
+##config[k]="some value with \"quotes\" and \\backslashes"
+##
+##echo -e "\n--- Original Hashmap ---"
+##for k in "${!config[@]}"; do
+##    printf '  %-12s = [%s]\n' "$k" "${config[$k]}"
+##done
+##
+##serialized=$(serialize_key_value_map config)
+##echo -e "\n--- Serialized ---"
+##echo "$serialized"
+##
+##declare -A restored
+##unserialize_into_map "$serialized" restored
+##
+##echo -e "\n--- Restored Hashmap ---"
+##for k in "${!restored[@]}"; do
+##    printf '  %-12s = [%s]\n' "$k" "${restored[$k]}"
+##done
+##
+##echo
+##if [[ "${config[title]}" == "${restored[title]}" && \
+##      "${config[description]}" == "${restored[description]}" ]]; then
+##    echo "✅ SUCCESS: All values (including newlines) are consistent"
+##else
+##    echo "❌ FAILURE: Values do not match"
+##fi
+##
+##exit
+#
+#
+#
+##
+##
+##declare -A config
+##
+##config[url]="https://youtube.com/watch?v=abc123"
+##config[title]="My Video\nwith actual newlines"
+##config[description]="Line 1\nLine 2\nLine 3"
+###config[title]=$'My Video\nwith actual newlines'           # ← real newline
+###config[description]=$'Line 1\nLine 2\nLine 3'             # ← real newlines
+##config[channel]="UCxxxxxxxxxxxxxxxx"
+##config[empty]=""
+##
+##echo "=== Original Hashmap ==="
+##for k in "${!config[@]}"; do
+##    printf '  %s = %s\n' "$k" "${config[$k]}"
+##done
+##
+### Serialize
+##serialized=$(serialize_key_value_map config)
+##echo -e "\n=== Serialized ==="
+##echo "$serialized"
+##
+### Unserialize back into hashmap
+##declare -A restored
+##unserialize_into_map "$serialized" restored
+##
+##echo -e "\n=== Restored Hashmap ==="
+##for k in "${!restored[@]}"; do
+##    printf '  %s = %s\n' "$k" "${restored[$k]}"
+##done
+##echo
+##echo
+##
+### Compare
+##if [[ "${config[title]}" == "${restored[title]}" ]]; then
+##    echo -e "\n✅ Newlines preserved correctly"
+##else
+##    echo -e "\n❌ Newline mismatch"
+##fi
+##exit
+#
+#serialized='h="hello world" s="it has \"quotes\"" b="path/with\\backslash" e=""'
+#
+#echo -e "serialized string:\n$serialized"
+#declare -A my_map
+#
+#unserialize_into_map "$serialized" "my_map" "orde"
+#
+##echo -e "\nParsed into hashmap:"
+##dump_map "my_map" "orde"
+#
+##dump_array "my_map"
+##exit
+#result="$(serialize_map "my_map" "orde")"
+#echo -e "serialized string from map:\n$result"
+#
+##echo;echo;echo
+##dump_array "${my_map[@]}"
+##echo;echo;echo
+##echo ggg
+##dump_map "orde"
+#
+#serialized1="$(serialize_map_into_arguments "my_map" "orde")"
+#echo -e "serialized string into arguments:\n$serialized1"
+#
+#declare -A my_map1
+##unserialize_into_map "$serialized1 \"surprise!\"" "my_map1" "orde"
+#unserialize_into_map "$serialized1 \"value=surprise!\"" "my_map1" "orde"
+#
+##echo -e "\nParsed into hashmap:"
+##dump_map "my_map1" "orde"
+## my_map1 and my_map should be the same
+#
+#result="$(serialize_map "my_map1" "orde")"
+#echo -e "serialized string from map:\n$result"
+#
+#exit
+
+		if $force_download1; then
+			enqueue-download $additional_arguments "--queue-name=$queue_name" "--queue-file=$local_queue" "--unit-name=a=sexy unit" "--download-archive=$download_index" "${template_name}:$queue_full_file_path" "$url"
 		else
-			enqueue-download $additional_arguments "${template_name}:$queue_full_file_path" "$url"
+			enqueue-download $additional_arguments "--queue-name=$queue_name" "--queue-file=$local_queue" "--unit-name=a=sexy unit" "${template_name}:$queue_full_file_path" "$url"
 		fi
 	done < "$sources_full_file_real_path"
 }
@@ -731,7 +982,7 @@ function handle_queue() {
 
 	if [[ ! -f "$queue_full_file_path" ]]; then
 		__error "queue file %s does not exist" "$queue_full_file_path"
-		exit 1
+		local_exit_failsafe
 	fi
 
 	mkdir --parents -- "$base_directory"
@@ -742,7 +993,16 @@ function handle_queue() {
 
 	$__debug && echo -e "queue file:\n$queue_full_file_path" && cat -- "$queue_full_file_path" && __press_any_key_to_continue
 
+	attached_queues=()
 	run_queue "$queue_name" "$queue_full_file_path"
+
+	local attached_queue_name
+	for attached_queue_name in "${!attached_queues[@]}"; do
+		local attached_queue_file_full_file_path="${attached_queues[$attached_queue_name]}"
+		local_queue="data/$attached_queue_name"
+		run_queue "$(basename -- "$attached_queue_file_full_file_path")" "$attached_queue_file_full_file_path"
+	done
+	attached_queues=()
 }
 
 function handle_source_list() {
@@ -765,25 +1025,19 @@ function handle_source_list() {
 	fi
 
 	if [[ ! -f "$queue_template_full_file_path" ]]; then
-		echo>&2 "ERROR: queue template file '$queue_template_full_file_path' does not exist"
-		exit 1
+		__error "ERROR: queue template file '$queue_template_full_file_path' does not exist"
+		local_exit_failsafe
 	fi
 
 	local_download_index="data/$queue_name.memory"
 	local_queue="data/$queue_name.queue"
 
-	if $fetch; then
-		# shellcheck disable=SC2064
-		trap "[[ ! -e \"$local_queue\" && -e \"$base_directory/data/archive/${local_queue}.$__current_date.backup\" ]] && mkdir --parents -- \"$base_directory/data/archive/\" && mv -- \"$base_directory/data/archive/$(basename -- "$local_queue").$__current_date.backup\" \"$local_queue\" && echo -e \"\\n\\nAborted. Queue file '$local_queue' was restored from backup!\"" EXIT QUIT
-
-		[[ -e "$local_queue" ]] && mkdir --parents -- "$base_directory/data/archive/" && mv -- "$local_queue" "$base_directory/data/archive/$(basename -- "$local_queue").$__current_date.backup"
-	fi
-
 	if $forget_downloads && [[ -f "$local_download_index" ]]; then
 		mkdir --parents -- "$base_directory/data/archive" && mv -- "$local_download_index" "$base_directory/data/archive/$(basename -- "$local_download_index").$__current_date.backup"
 	fi
 
-	if [[ -f "$local_queue" ]]; then
+	if [[ -f "$local_queue" ]] && ! $fetch; then
+		regenerate_queue=false
 		if $force_download; then
 			download_archive="data/archive/$__current_date.memory"
 		else
@@ -794,8 +1048,18 @@ function handle_source_list() {
 
 		$__debug && echo -e "queue file:\n$queue_full_file_path" && cat -- "$queue_full_file_path" && __press_any_key_to_continue
 
+		attached_queues=()
 		run_queue "$queue_name" "$queue_full_file_path"
+
+		local attached_queue_name
+		for attached_queue_name in "${!attached_queues[@]}"; do
+			local attached_queue_file_full_file_path="${attached_queues[$attached_queue_name]}"
+			local_queue="data/$attached_queue_name"
+			run_queue "$(basename -- "$attached_queue_file_full_file_path")" "$attached_queue_file_full_file_path"
+		done
+		attached_queues=()
 	else
+		regenerate_queue=true
 		download_archive="$local_download_index"
 
 		#if $fetch && [[ -f "$download_archive" ]] && $forget_downloads; then
@@ -811,17 +1075,25 @@ function handle_source_list() {
 		echo -e "\n\n"
 
 		# disabled, because the generated queue contains another parameter instance of "download_archive"
-		force_download=false #  so the argument that effectively turns on force_download must be ignored.
+		#force_download=false #  so the argument that effectively turns on force_download must be ignored.
 		# you can't have multiple instances – yt-dlp will take only the last one.
 
 		$__debug && echo -e "queue file:\n$queue_full_file_path" && cat -- "$queue_full_file_path" && __press_any_key_to_continue
 
-		mv -- "$queue_full_file_path" "$local_queue"
+		queue_full_file_path="$(realpath --quiet -- "$queue_full_file_path")"
 
-		run_queue "$queue_name" "$local_queue"
+		attached_queues=()
+		run_queue "$queue_name" "$queue_full_file_path"
+
+		local attached_queue_name
+		for attached_queue_name in "${!attached_queues[@]}"; do
+			local attached_queue_file_full_file_path="${attached_queues[$attached_queue_name]}"
+			local_queue="data/$attached_queue_name"
+			run_queue "$(basename -- "$attached_queue_file_full_file_path")" "$attached_queue_file_full_file_path"
+		done
+		attached_queues=()
 
 		remote_download_archive="data/archive/$queue_name.$__current_date.memory"
-
 		if [[ -f "$local_download_index" ]]; then
 			cp -- "$local_download_index" "$remote_download_archive"
 		fi
@@ -842,18 +1114,51 @@ else
 	given_files=("${given_files[@]}")
 fi
 
+view_file="" #@ temporary debug solution
+
 for file in "${given_files[@]}"; do
+	__heading "File: %s" "$file"
 	file_extension="${file##*.}"
 
 	if [[ "$file_extension" == "sources" ]]; then
-		( handle_source_list "$file" )
-	elif [[ "$file_extension" == "queue" ]]; then
-    	( handle_queue "$file" )
-	else
-		file="$file.sources"
-		( handle_source_list "$file" )
-	fi
+		sources_file="$file"
 
-	undownloader-view "$file" --update-all
+		if $print_sources_files; then
+			parse_sources_file "$sources_file"
+			print_tree
+			exit 0
+		else
+			$__debug && print_tree
+		fi
+
+		( handle_source_list "$sources_file" )
+	elif [[ "$file_extension" == "queue" ]]; then
+		queue_file="$file"
+
+    	( handle_queue "$queue_file" )
+	else
+		sources_file="$file.sources"
+
+		if $print_sources_files; then
+			parse_sources_file "$sources_file"
+			print_tree
+			exit 0
+		else
+			$__debug && print_tree
+		fi
+
+		( handle_source_list "$sources_file" )
+	fi
+	view_file="$file"
 done
 
+additional_arguments=""
+$force_view_update && additional_arguments="$additional_arguments--force-view-update "
+$__verbose && additional_arguments="$additional_arguments--verbose "
+$__debug && additional_arguments="$additional_arguments--debug "
+$__quiet && additional_arguments="$additional_arguments--quiet "
+
+#__info "! Calling view %s" "$view_file"
+#undownloader-view "$view_file" --update-all $additional_arguments
+__info "! Calling view(s)"
+undownloader-view --all $additional_arguments

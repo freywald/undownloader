@@ -1,0 +1,456 @@
+#!/bin/bash
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../../")/library/base" || exit 1
+__set_script_path 1
+__enable_error_handler
+function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+source -- "$__script_path/library/undownloader-reduplicator-library" || exit 1
+
+run_dir="./undownloader-reduplicator-$__current_date/logs/"
+arguments=()
+
+usage() {
+	echo "Usage: $0 [--run-dir DIR] [MATCHES-TXT]" >&2
+	echo "  Writes ./reduplicator-matches.txt in the current directory." >&2
+}
+
+while (( $# > 0 )); do
+	case "$1" in
+		--run-dir)
+			if [[ -z "${2-}" || "$2" == -* ]]; then
+				usage
+				exit 1
+			fi
+			run_dir="$2/"
+			shift 2 ||:
+			;;
+		--help)
+			usage
+			exit 0
+			;;
+		--)
+			shift ||:
+			arguments+=("$@")
+			break
+			;;
+		-*)
+			echo "Unknown option: $1" >&2
+			usage
+			exit 1
+			;;
+		*)
+			arguments+=("$1")
+			shift ||:
+			;;
+	esac
+done
+
+set -- "${arguments[@]}"
+
+mkdir --parents -- "$run_dir" || exit 1
+
+declare -A json_ids_have=()
+declare -A json_ids_cache=()
+
+declare -A dir_seen_media=()
+declare -A dir_has_id=()
+declare -A dir_media=()
+
+declare -A purl_id_cache=()
+declare -A purl_id_have=()
+
+matches="${1:-./reduplicator-matches.txt}"
+matches_complete=false
+
+backup_matches "$matches"
+touch -- "$matches"
+
+on_index_interrupt() {
+    trap - INT TERM
+    if ! $matches_complete; then
+        restore_matches_from_backup "$matches"
+    fi
+    exit 130
+}
+trap on_index_interrupt INT TERM
+
+non_matches="$run_dir/non-reduplicator-matches.txt"
+unhandled_extensions="$run_dir/unhandled-extensions.log"
+warnings="$run_dir/warnings.log"
+errors="$run_dir/errors.log"
+orphans="$run_dir/orphans.log"
+json_log="$run_dir/json.log"
+layout_log="$run_dir/layout.log"
+content_sources="$run_dir/content.sources"
+unresolved="$run_dir/unresolved.txt"
+
+: >| "$non_matches"
+: >| "$unhandled_extensions"
+: >| "$warnings"
+: >| "$errors"
+: >| "$orphans"
+: >| "$json_log"
+: >| "$layout_log"
+: >| "$content_sources"
+: >| "$unresolved"
+
+json_ids_in_dir() {
+	local dir="$1"
+	local -A seen=()
+	local json id json_url url_id collected
+
+	if [[ -n "${json_ids_have[$dir]:-}" ]]; then
+		if [[ -n "${json_ids_cache[$dir]:-}" ]]; then
+			printf '%s\n' "${json_ids_cache[$dir]}"
+		fi
+		return 0
+	fi
+	json_ids_have["$dir"]=1
+
+	for json in "$dir"/*.info.json "$dir"/*info.json; do
+		[[ -f "$json" ]] || continue
+		is_ignored_sidecar "$json" && continue
+
+		id="$(jq -r '
+	select((._type // "video") == "video")
+	| select(has("entries") | not)
+	| select(
+		(.extractor_key // .extractor // "")
+		| ascii_downcase
+		| test("youtube")
+	)
+	| .id // empty
+' -- "$json" 2>/dev/null ||:)"
+		[[ "$id" =~ ^[a-zA-Z0-9_-]{11}$ ]] || continue
+		[[ -n "$id" ]] || continue
+		[[ -n "${seen[$id]:-}" ]] && continue
+
+		json_url="$(jq -r '.webpage_url // .original_url // .__undownloader_original_url // empty' -- "$json" 2>/dev/null ||:)"
+		if url_id="$(parse_youtube_video_id "$json_url")"; then
+			if [[ "$url_id" != "$id" ]]; then
+				log_warning \
+					"json .id ${id} disagrees with json URL id ${url_id}: ${json}" \
+					"$json_log"
+				continue
+			fi
+		fi
+
+		seen["$id"]=1
+		json_ids_cache["$dir"]="${json_ids_cache[$dir]:-}${id}"$'\n'
+	done
+
+	collected="${json_ids_cache[$dir]:-}"
+	json_ids_cache["$dir"]="${collected%$'\n'}"
+
+	if [[ -n "${json_ids_cache[$dir]:-}" ]]; then
+		printf '%s\n' "${json_ids_cache[$dir]}"
+	fi
+	return 0
+}
+
+write_match() {
+	local id="$1"
+	local file_path="$2"
+	local ext="$3"
+	local resolved masked
+
+	resolved="$(realpath --canonicalize-existing -- "$file_path"; printf x)"
+	resolved="${resolved%$'\n'x}"
+	masked="$(mask_path "$resolved"; printf x)"
+	masked="${masked%x}"
+
+	printf '%s: %s\n' "$id" "$masked" >> "$matches"
+	printf 'https://youtube.com/watch?v=%s\n' "$id" >> "$content_sources"
+
+	if is_known_media_ext "$ext"; then
+		printf '%s: %s\n' "$id" "$masked" >> "$run_dir/matches-extension-${ext}.txt"
+	fi
+}
+
+while IFS= read -r -d '' path; do
+	base="${path##*/}"
+	parent="${path%/*}"
+	[[ "$parent" == "$path" ]] && parent="."
+
+	is_ignored_sidecar "$base" && continue
+
+	media_file_extension="${base##*.}"
+	media_file_extension="${media_file_extension,,}"
+
+	if [[ "$base" == *.* ]] && ! is_known_media_ext "$media_file_extension"; then
+		printf '%s\n' "$media_file_extension" >> "$unhandled_extensions"
+	fi
+
+	is_known_media_ext "$media_file_extension" || continue
+	dir_seen_media["$parent"]=1
+	dir_media["$parent"]+="$path"$'\n'
+done < <(find . -type f -print0 2> >(grep -v 'Permission denied' >&2 ||:))
+
+for parent in "${!dir_media[@]}"; do
+	parent_base="${parent##*/}"
+	[[ "$parent" == "." ]] && parent_base="."
+
+	json_ids="$(json_ids_in_dir "$parent")"
+	json_count="$(count_ids "$json_ids")"
+
+	paths=()
+	while IFS= read -r p; do
+		[[ -n "$p" ]] || continue
+		paths+=("$p")
+	done <<<"${dir_media[$parent]}"
+
+	n_media="${#paths[@]}"
+	stem=""
+	same_stem=true
+	file_ids=""
+	declare -A claimed=()
+
+	for path in "${paths[@]}"; do
+		base="${path##*/}"
+		if [[ "$base" == *.* ]]; then
+			this_stem="${base%.*}"
+		else
+			this_stem="$base"
+		fi
+		if [[ -z "$stem" ]]; then
+			stem="$this_stem"
+		elif [[ "$this_stem" != "$stem" ]]; then
+			same_stem=false
+		fi
+
+		if fid="$(is_match_file "$base")"; then
+			file_ids+="$fid"$'\n'
+		fi
+		if pid="$(purl_id_of "$path")" && [[ -n "$pid" ]]; then
+			file_ids+="$pid"$'\n'
+		elif tid="$(comment_id_of "$path")" && [[ -n "$tid" ]]; then
+			file_ids+="$tid"$'\n'
+		fi
+	done
+
+	media_id_count="$(printf '%s\n' "$file_ids" | sort -u | grep -c -- '.' ||:)"
+	mixed=false
+	if (( media_id_count > 1 )); then
+		mixed=true
+		log_warning \
+			"mixed video ids in one leaf (directory name will not be used): ${parent}" \
+			"$layout_log"
+	fi
+
+	use_dir_name=false
+	if (( n_media == 1 )); then
+		use_dir_name=true
+	fi
+
+	dir_name_id=""
+	if $use_dir_name; then
+		dir_name_id="$(is_match_dir "$parent_base" ||:)"
+	elif dir_id="$(is_match_dir "$parent_base" ||:)"; then
+		log_warning \
+			"directory name video id ${dir_id} ignored (not a single-media leaf): ${parent}" \
+			"$layout_log"
+	fi
+
+	allow_json_fallback=false
+	if (( json_count == 1 )) && { (( n_media == 1 )) || $same_stem; }; then
+		allow_json_fallback=true
+	fi
+
+	if (( json_count > 1 )) && (( n_media == 1 )); then
+		log_warning \
+			"one media file and ${json_count} different video .info.json ids (orphans unless PURL/filename binds one): ${parent}" \
+			"$orphans"
+	fi
+
+	for path in "${paths[@]}"; do
+		base="${path##*/}"
+		media_file_extension="${base##*.}"
+		media_file_extension="${media_file_extension,,}"
+
+		purl_id=""
+		file_id=""
+		tag_id=""
+		dir_id=""
+
+		if pid="$(purl_id_of "$path")" && [[ -n "$pid" ]]; then
+			purl_id="$pid"
+		fi
+
+		if fid="$(is_match_file "$base")"; then
+			file_id="$fid"
+		fi
+
+		tag_st=0
+		if [[ -z "$purl_id" ]]; then
+			tag_id="$(comment_id_of "$path")" || tag_st=$?
+			if (( tag_st == 2 )); then
+				log_warning "COMMENT/COMMENTS/SYNOPSIS/DESCRIPTION video ids disagree: ${path}" "$layout_log"
+				tag_id=""
+			fi
+
+			if [[ -n "$purl_id" && -n "$tag_id" && "$purl_id" != "$tag_id" ]]; then
+				log_warning "tag id ${tag_id} disagrees with media PURL id ${purl_id} (PURL wins): ${path}" "$layout_log"
+			fi
+		fi
+
+		if (( n_media == 1 )) && dir_id="$(is_match_dir "$parent_base")"; then
+			:
+		else
+			dir_id=""
+		fi
+
+        if [[ -n "$purl_id" && -n "$file_id" && "$purl_id" != "$file_id" ]]; then
+            log_warning "filename id ${file_id} disagrees with media PURL id ${purl_id}: ${path}" "$layout_log"
+        fi
+        if [[ -n "$tag_id" && -n "$file_id" && "$tag_id" != "$file_id" ]]; then
+            log_warning "filename id ${file_id} disagrees with tag id ${tag_id} (filename wins): ${path}" "$layout_log"
+        fi
+        if [[ -n "$tag_id" && -n "$dir_id" && "$tag_id" != "$dir_id" ]]; then
+            log_warning "directory id ${dir_id} disagrees with tag id ${tag_id} (directory wins unless filename/PURL set): ${path}" "$layout_log"
+        fi
+        if [[ -n "$tag_id" && -n "$json_ids" ]] && ! id_in_list "$tag_id" <<<"$json_ids"; then
+            log_warning "tag id ${tag_id} disagrees with video .info.json (json/filename win): ${path}" "$json_log"
+        fi
+
+        extracted=""
+        extracted_from=""
+        if [[ -n "$purl_id" ]]; then
+            extracted="$purl_id"
+            extracted_from="media PURL"
+        elif [[ -n "$file_id" ]]; then
+            extracted="$file_id"
+            extracted_from="filename"
+        elif [[ -n "$dir_id" ]]; then
+            extracted="$dir_id"
+            extracted_from="directory name"
+        elif [[ -n "$tag_id" ]]; then
+            extracted="$tag_id"
+            extracted_from="COMMENT/SYNOPSIS/DESCRIPTION"
+        fi
+
+		if [[ -n "$purl_id" && -n "$json_ids" ]] && ! id_in_list "$purl_id" <<<"$json_ids"; then
+			log_warning \
+				"media PURL id ${purl_id} disagrees with video .info.json id $(tr '\n' ',' <<<"$json_ids"): ${path}" \
+				"$json_log"
+			dir_has_id["$parent"]=1
+			continue
+		fi
+
+		if [[ -n "$extracted" && -n "$purl_id" && "$extracted" != "$purl_id" ]]; then
+			log_warning \
+				"${extracted_from} id ${extracted} disagrees with media PURL id ${purl_id}: ${path}" \
+				"$json_log"
+			dir_has_id["$parent"]=1
+			continue
+		fi
+
+		if [[ -n "$extracted" && -n "$json_ids" ]] && ! id_in_list "$extracted" <<<"$json_ids"; then
+			log_warning \
+				"${extracted_from} id ${extracted} disagrees with video .info.json id $(tr '\n' ',' <<<"$json_ids"): ${path}" \
+				"$json_log"
+			dir_has_id["$parent"]=1
+			continue
+		fi
+
+		chosen="${purl_id:-${extracted:-}}"
+		if [[ -z "$chosen" && "$allow_json_fallback" == true ]]; then
+			chosen="$json_ids"
+		fi
+
+		if [[ -n "$chosen" ]]; then
+			dir_has_id["$parent"]=1
+			claimed["$chosen"]=1
+			write_match "$chosen" "$path" "$media_file_extension"
+			continue
+		fi
+
+        reason="no video id from filename, directory name, media PURL, COMMENT/SYNOPSIS/DESCRIPTION, or video .info.json"
+        log_warning "orphan media, $reason: $path" "$orphans"
+        printf "No video ID could be determined for the file '%s'.\nFile: \t%s\n" "$(basename -- "$path")" "$path" >> "$unresolved"
+	done
+
+	if [[ -n "$json_ids" ]]; then
+		while IFS= read -r jid; do
+			[[ -n "$jid" ]] || continue
+			[[ -n "${claimed[$jid]:-}" ]] && continue
+			log_warning \
+				"orphan json id ${jid} not claimed by any media file in leaf: ${parent}" \
+				"$orphans"
+		done <<<"$json_ids"
+	fi
+
+	dir_id="$(is_match_dir "$parent_base" ||:)"
+	if [[ -n "$dir_id" && -z "${claimed[$dir_id]:-}" ]]; then
+		log_warning \
+			"directory video id ${dir_id} is not claimed by any media file in leaf: ${parent}" \
+			"$orphans"
+	fi
+
+	unset claimed
+done
+
+while IFS= read -r -d '' dir; do
+	[[ "$dir" == "." ]] && continue
+	is_leaf_dir "$dir" || continue
+	[[ -n "${dir_seen_media[$dir]:-}" ]] && continue
+
+	printf '%s\n' "$dir" >> "$non_matches"
+
+	extracted=""
+	if extracted="$(is_match_dir "${dir##*/}")"; then
+		:
+	else
+		extracted=""
+		for f in "$dir"/*; do
+			[[ -f "$f" ]] || continue
+			is_ignored_sidecar "$f" && continue
+			if extracted="$(is_match_file "${f##*/}")"; then
+				break
+			fi
+		done
+	fi
+
+	json_ids="$(json_ids_in_dir "$dir")"
+
+	if [[ -n "$json_ids" ]]; then
+		log_warning \
+			"orphan json, video id present but leaf has no audio/video file (ids=$(tr '\n' ',' <<<"$json_ids")): ${dir}" \
+			"$orphans"
+	elif [[ -n "$extracted" ]]; then
+		log_warning \
+			"YouTube id in name but leaf has no audio/video file: ${dir}" \
+			"$layout_log"
+	else
+		log_warning \
+			"leaf has no audio/video file and no video id (playlist or non-video metadata only): ${dir}" \
+			"$layout_log"
+	fi
+done < <(find . -type d -print0 2> >(grep -v 'Permission denied' >&2 ||:))
+
+for parent in "${!dir_seen_media[@]}"; do
+	[[ -n "${dir_has_id[$parent]:-}" ]] && continue
+	printf '%s\n' "$parent" >> "$non_matches"
+	log_warning \
+		"media directory has no resolvable YouTube video id (see orphans.log for files): ${parent}" \
+		"$layout_log"
+done
+
+sort --unique --output="$matches" -- "$matches"
+sort --unique --output="$non_matches" -- "$non_matches"
+sort --unique --output="$unhandled_extensions" -- "$unhandled_extensions"
+sort --unique --output="$warnings" -- "$warnings"
+sort --unique --output="$errors" -- "$errors"
+sort --unique --output="$orphans" -- "$orphans"
+sort --unique --output="$json_log" -- "$json_log"
+sort --unique --output="$layout_log" -- "$layout_log"
+sort --unique --output="$content_sources" -- "$content_sources"
+
+for ext_file in "$run_dir/matches-extension-"*.txt; do
+	[[ -f "$ext_file" ]] || continue
+	sort --unique --output="$ext_file" -- "$ext_file"
+done
+
+matches_complete=true
+trap - INT TERM
+cat -- "$matches"

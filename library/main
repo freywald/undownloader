@@ -15,10 +15,130 @@ failed_file_log=""
 known_to_fail_log=""
 queue_failed_items_log_file=""
 __regular_expression__configuration_matches=""
+view_regular_expression_configuration_matches=""
+regenerate_queue=false
+ignore_memory=false
+filtered_queue=false
+force_view_update=false
+clean_outdated_cache=false
+video_cache_expires=false
+other_cache_expires=false
+
+cache_video_time_to_live=30672000  #60*60*24*355
+cache_other_time_to_live=3600
 
 source -- "$__script_path/configuration/defaults" || exit 1
+#source -- "$__script_path/library/sources_file_format" || exit 1
+source -- "$__script_path/library/sourcetree-datafile-format/sourcetree-datafile-format" || exit 1
+
+if [[ -z "${disable_error_handler_log_file-}" ]]; then
+: "${HANDLER_ERROR_FILE:?HANDLER_ERROR_FILE not set}"
+fi
 
 base_directory="${default_target_directory:?}"
+
+detect_link_kind() {
+    local hostname="$1"
+    local url="$2"
+    local rules_name="link_kind_${hostname}"
+    local entry kind regex
+
+    [[ -n "$hostname" && -n "$url" ]] || return 1
+    declare -p "$rules_name" &>"/dev/null" || return 1
+
+    local -n rules="$rules_name"
+
+    for entry in "${rules[@]}"; do
+        kind="${entry%%$'\t'*}"
+        regex="${entry#*$'\t'}"
+        [[ -n "$kind" && -n "$regex" ]] || continue
+        if [[ "$url" =~ $regex ]]; then
+            printf '%s' "$kind"
+            return 0
+        fi
+    done
+    return 1
+}
+
+#function detect_link_kind(){
+#	local hostname="$1"
+#	local url="$2"
+#
+#	#@ todo is yt-dlp to detect it as well, can we query it/extract it from a run without download?
+#	# we need to do this for every possible video/audio site that yt-dlp accepts, even generic ones
+#	if [[ "$hostname" == "youtube" ]]; then
+#		#@todo setup an hashmap with these regular expressions as key that returns the kind value in the configuration where host_match_name is placed
+#		if [[ "$url" =~ /@([a-zA-Z0-9_-]+) ]]; then
+#			echo "channel"
+#		elif [[ "$url" =~ /channel/([A-Za-z0-9_-]+) ]]; then
+#			echo "channel"
+#		elif [[ "$url" =~ v=([a-zA-Z0-9_-]+) ]]; then
+#			echo "video"
+#		elif [[ "$url" =~ playlist\?list=([a-zA-Z0-9_-]+) ]]; then
+#			echo "playlist"
+#		else
+#			return 1
+#		fi
+#	else
+#		return 1
+#	fi
+#
+#	return 0
+#}
+
+host_of() {
+    local h="${1#*://}"
+    h="${h%%/*}"
+    h="${h%%:*}"
+    h="${h%%\?*}"
+    h="${h%%#*}"
+    printf '%s' "${h,,}"
+}
+
+get_hostname_by_url() {
+    local host re
+    host="$(host_of "$1")"
+    [[ -n "$host" ]] || return 1
+
+    for re in "${!host_match_name[@]}"; do
+        if [[ "$host" =~ $re ]]; then
+            printf '%s' "${host_match_name[$re]}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+site_args() {
+    local key="${1-}"
+    local spec=""
+    local part
+
+    [[ -n "$key" ]] || return 0
+    spec="${base_configuration_site[$key]-}"
+    [[ -n "$spec" ]] || return 0
+
+    while [[ -n "$spec" ]]; do
+        part="${spec%%;*}"
+        if [[ "$spec" == *';'* ]]; then
+            spec="${spec#*;}"
+        else
+            spec=""
+        fi
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        [[ -n "$part" ]] && printf '%s\0' "$part"
+    done
+}
+
+determinate_site_configuration() {
+    local host
+    hostname="$(get_hostname_by_url "$1")" || hostname=""
+    printf '%s\0' "${base_configuration[@]}"
+    [[ -n "$hostname" ]] || return 0
+    site_args "$hostname"
+}
 
 function handle_source_selector(){
 	local file_selector="$1"
@@ -98,7 +218,6 @@ function handle_source_selector(){
 
 	sources_full_file_real_path="$sources_full_file_path"
 
-
 	if [[ "${sources_full_file_path:0:1}" != "/" ]]; then
 		sources_full_file_real_path="$(realpath --quiet -- "$__current_directory/$sources_full_file_real_path")"
 	else
@@ -109,58 +228,66 @@ function handle_source_selector(){
 }
 
 function sanitize_url() {
-	local url="$1"
+    local url="$1"
+    local video_id="" playlist_id=""
 
-	# Remove any leading/trailing whitespace
-	url="${url#"${url%%[![:space:]]*}"}"
-	url="${url%"${url##*[![:space:]]}"}"
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%"${url##*[![:space:]]}"}"
 
-	# Force https://
-	url="${url#http://}"
-	url="${url#https://}"
-	url="https://${url}"
+    url="${url#http://}"
+    url="${url#https://}"
+    url="https://${url}"
 
-	# Remove common subdomains (www, m, music, studio, etc.)
-	url="${url//https:\/\/www./https:\/\/}"
-	url="${url//https:\/\/m./https:\/\/}"
-	url="${url//https:\/\/music./https:\/\/}"
-	url="${url//https:\/\/studio./https:\/\/}"
+    url="${url//https:\/\/www./https:\/\/}"
+    url="${url//https:\/\/m./https:\/\/}"
+    url="${url//https:\/\/music./https:\/\/}"
+    url="${url//https:\/\/studio./https:\/\/}"
 
-	# Convert youtu.be short links to full youtube.com format
-	if [[ "$url" =~ ^https://youtu\.be/([a-zA-Z0-9_-]+) ]]; then
-		url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
-	fi
+    if [[ "$url" =~ ^https://youtu\.be/([A-Za-z0-9_-]+) ]]; then
+        url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
+    fi
 
-	# Clean up common query parameters and convert to clean /watch?v= format
-	# This handles: ?v=ID, ?app=desktop&v=ID, ?feature=...&v=ID, etc.
-	if [[ "$url" =~ ^https://youtube\.com/watch\?.*v=([a-zA-Z0-9_-]+) ]]; then
-		url="https://youtube.com/watch?v=${BASH_REMATCH[1]}"
-	fi
+    if [[ "$1" =~ [?\&]list=([A-Za-z0-9_-]+) ]]; then
+        playlist_id="${BASH_REMATCH[1]}"
+    fi
 
-	url="${url%%/}"
-	while [[ "$url" == */ ]]; do
-		url="${url%/}"
-	done
+    if [[ "$url" =~ ^https://youtube\.com/watch\? ]]; then
+        video_id=""
+        [[ "$url" =~ [?\&]v=([A-Za-z0-9_-]+) ]] && video_id="${BASH_REMATCH[1]}"
+        if [[ -n "$video_id" ]]; then
+            url="https://youtube.com/watch?v=${video_id}"
+        fi
+    fi
 
-	echo "$url"
+    while [[ "$url" == */ ]]; do
+        url="${url%/}"
+    done
+
+    printf '%s\n' "$url"
+    printf '%s\n' "$playlist_id"
 }
 
 function is_url_in_memory_file(){
 	local video_url="$1"
 	local memory_file="$2"
 
-	if ! cache_file="$(get_video_data_of_url "$video_url" "urls")"; then
-		return 1
-	fi
+	local lookup_only=true
 
-    mapfile -t lines < "$cache_file"
+	local status
+	cache_file="$(get_video_data_of_url "$video_url" "urls" "$lookup_only")"
+    status=$?
 
-	local video_id
+    if (( status > 0 )); then
+		return 2
+    fi
 
-	local incomplete=false
+	mapfile -t lines < "$cache_file"
+
 	local i=0
+	local incomplete=false
 	for line in "${lines[@]}"; do
 		if (( i > 0 )); then # skips channel id at position 0
+			local video_id
 			video_id="$line"
 			if ! grep --quiet --extended-regexp -- "^([^\ ]+) ($video_id)$" "$memory_file" > "/dev/null"; then
 				incomplete=true
@@ -170,12 +297,319 @@ function is_url_in_memory_file(){
 	done
 
 	$incomplete && return 1
+
 	return 0
 }
+#
+#is_higher_quality_available() {
+#    local file="$1"
+#    local url="$2"
+#    local have want json
+#
+#    [[ -f "$file" ]] || { printf '%s\n' "no file"; return 2; }
+#
+#    have="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 -- "$file" 2>/dev/null ||:)"
+#    [[ "$have" =~ ^[0-9]+$ ]] || { printf '%s\n' "no height in file"; return 2; }
+#
+#	mapfile -d '' -t site_configuration < <(determinate_site_configuration "$url")
+#    json="$(ytdlp_json yt-dlp $yt_dlp_fast "${site_configuration[@]}" --no-download-archive --dump-single-json --no-playlist -- "$url")" || return 2
+#
+#    want="$(jq -r '[.formats[]? | select(.height != null) | .height] | max // empty' <<< "$json")"
+#    [[ "$want" =~ ^[0-9]+$ ]] || { printf '%s\n' "no height in listing"; return 2; }
+#
+#    if (( want > have )); then
+#        printf '%s %s' "$have" "$want"
+#        return 0
+#    fi
+#
+#    printf '%s %s' "$have" "$want"
+#    return 1
+#}
+
+#file="/path/to/videoid.mkv"
+#url="https://www.youtube.com/watch?v=videoid"
+#
+#cmp=""
+#cmp="$(is_higher_quality_available "$file" "$url")"
+#status=$?
+#
+#case "$status" in
+#    0)
+#        have="${cmp%% *}"
+#        want="${cmp##* }"
+#        __warn "Higher quality available for %s: on disk %sp, listed %sp" "$url" "$have" "$want"
+#        ;;
+#    1)
+#        __verbose "No higher quality for %s (%s)" "$url" "$cmp"
+#        ;;
+#    *)
+#        __warn "Quality check failed for %s: %s" "$url" "$cmp"
+#        ;;
+#esac
+#
+#
+#media_root="/mnt/halde/youtube/🔴.undownloaded/files/youtube.com/media"
+#
+#id_shard_rel() {
+#    local id="$1"
+#    printf '%s/%s/%s/%s/%s/%s' "${id:0:2}" "${id:2:2}" "${id:4:2}" "${id:6:2}" "${id:8:2}" "$id"
+#}
+#
+#planned_ext_for_url() {
+#    local url="$1"
+#    local json ac
+#
+#	mapfile -d '' -t site_configuration < <(determinate_site_configuration "$url")
+#    json="$(ytdlp_json yt-dlp $yt_dlp_fast "${site_configuration[@]}" --no-download-archive --dump-single-json --no-playlist -- "$url")" || return 2
+#    ac="$(jq -r '[.formats[]? | select(.vcodec != null and .vcodec != "none")] | length' <<< "$json")"
+#    if (( ac > 0 )); then
+#        printf '%s' "mkv"
+#    else
+#        printf '%s' "mka"
+#    fi
+#}
+#
+#warn_existing_extension_mismatch() {
+#    local url="$1"
+#    local video_id="$2"
+#    local planned existing base rel dir f ext
+#
+#    planned="$(planned_ext_for_url "$url")" || {
+#        __warn "Could not determine planned extension for %s" "$url"
+#        return 1
+#    }
+#
+#    rel="$(id_shard_rel "$video_id")"
+#    dir="$media_root/$rel"
+#
+#    [[ -d "$dir" ]] || return 0
+#
+#    existing=0
+#    for f in "$dir/$video_id".*; do
+#        [[ -f "$f" ]] || continue
+#        ext="${f##*.}"
+#        ext="${ext,,}"
+#        [[ "$ext" == "$video_id" ]] && continue
+#        existing=1
+#        if [[ "$ext" != "$planned" ]]; then
+#            __warn "Existing file extension differs from planned %s: %s (planned %s/%s.%s)" "$planned" "$f" "$dir" "$video_id" "$planned"
+#        fi
+#    done
+#}
+
+## archive hit, do not download — still warn if disk suffix ≠ mkv/mka for this URL
+#if grep -qx -- "$video_id" "$memory_file"; then
+#    warn_existing_extension_mismatch "$url" "$video_id"
+#    __warn "Already in memory file, skip download: %s" "$video_id"
+#    return 0
+#fi
+
+yt_dlp_fast="--sleep-requests 0 --sleep-interval 0 --simulate --no-download-archive --no-warnings"
+
+function log_handler() {
+    printf '%s\n' "$1" >> "$HANDLER_ERROR_FILE"
+}
+# wrapper statuses (not from yt-dlp)
+readonly YTDLP_NO_PLAYLISTS=80
+readonly YTDLP_PLAYLISTS_404=81
+readonly YTDLP_AGE_GATE=82
+readonly YTDLP_BOT_GATE=83
+readonly YTDLP_COOKIES=84
+readonly YTDLP_MEMBERS=85
+readonly YTDLP_PRIVATE=86
+readonly YTDLP_UNAVAILABLE=87
+readonly YTDLP_GEO=88
+readonly YTDLP_HTTP_4XX=89
+readonly YTDLP_DOWNLOAD=90
+readonly YTDLP_SIGNIN=91
+readonly YTDLP_NOT_JSON=92
+
+# Match yt-dlp *errors*, not video metadata.
+# Real members-only lines look like:
+#   ERROR: [youtube] ID: Join this channel to get access to members-only content ...
+#   ERROR: [youtube] ID: This video is available to this channel's members ...
+ytdlp_classify() {
+    local err_text="$1"
+    local pattern code
+
+    shift ||:
+    # remaining "$@" is the yt-dlp command, for the log line
+
+    while IFS=$'\t' read -r code pattern; do
+        [[ -n "$code" ]] || continue
+        if grep -Eiq -- "$pattern" <<<"$err_text"; then
+            log_handler "yt-dlp status $code: $*"
+            [[ -n "$err_text" ]] && log_handler "$err_text"
+            return "$code"
+        fi
+    done <<'EOF'
+80	does not have a playlists tab
+81	playlists: Unable to download webpage: HTTP Error 404
+82	confirm your age|age-restricted
+83	sign in to confirm you.?re not a bot|not a bot
+84	use --cookies-from-browser or --cookies for the authentication
+85	members-only content|available to this channel'?s members
+86	this video is private|private video
+87	video unavailable|this video is not available
+88	not available in your country|content isn.?t available
+89	http error 4[0-9]{2}
+90	unable to download
+91	ERROR:.*sign in to
+EOF
+
+    return 0
+}
+
+ytdlp_capture() {
+    local err out status=0 classified=0 err_text
+
+    err="$(mktemp)" || return 1
+    out="$("$@" 2>|"$err")" || status=$?
+    err_text="$(cat -- "$err" 2>/dev/null ||:)"
+    rm --force -- "$err"
+
+    # Successful extraction can still contain "Join this channel" in description JSON.
+    # Only classify when yt-dlp itself failed.
+    if (( status > 0 )); then
+        ytdlp_classify "$err_text" "$@" || classified=$?
+        if (( classified != 0 )); then
+            return "$classified"
+        fi
+        log_handler "yt-dlp failed ($status): $*"
+        [[ -n "$err_text" ]] && log_handler "$err_text"
+        [[ -n "$out" ]] && log_handler "$out"
+        return "$status"
+    fi
+
+    ytdlp_out="$out"
+    return 0
+}
+
+declare -g ytdlp_out=""
+
+ytdlp_json() {
+    ytdlp_out=""
+    ytdlp_capture "$@" || return $?
+    if ! jq -e 'type == "object" or type == "array"' >/dev/null 2>&1 <<<"$ytdlp_out"; then
+        log_handler "yt-dlp not json: $*"
+        log_handler "$ytdlp_out"
+        return "$YTDLP_NOT_JSON"
+    fi
+    printf '%s' "$ytdlp_out"
+    return 0
+}
+
+ytdlp_text() {
+    ytdlp_out=""
+    ytdlp_capture "$@" || return $?
+    printf '%s' "$ytdlp_out"
+    return 0
+}
+
+## wrapper statuses (not from yt-dlp)
+#readonly YTDLP_NO_PLAYLISTS=80
+#readonly YTDLP_PLAYLISTS_404=81
+#readonly YTDLP_AGE_GATE=82
+#readonly YTDLP_BOT_GATE=83
+#readonly YTDLP_COOKIES=84
+#readonly YTDLP_MEMBERS=85
+#readonly YTDLP_PRIVATE=86
+#readonly YTDLP_UNAVAILABLE=87
+#readonly YTDLP_GEO=88
+#readonly YTDLP_HTTP_4XX=89
+#readonly YTDLP_DOWNLOAD=90
+#readonly YTDLP_SIGNIN=91
+#readonly YTDLP_NOT_JSON=92
+#
+#ytdlp_classify() {
+#    local out="$1"
+#    local err_text="$2"
+#    local blob="$out"$'\n'"$err_text"
+#    local pattern code
+#
+#    shift 2 ||:
+#    # remaining "$@" is the yt-dlp command, for the log line
+#
+#    while IFS=$'\t' read -r code pattern; do
+#        [[ -n "$code" ]] || continue
+#        if grep -Eiq -- "$pattern" <<<"$blob"; then
+#            log_handler "yt-dlp status $code: $*"
+#            [[ -n "$err_text" ]] && log_handler "$err_text"
+#            [[ -n "$out" ]] && log_handler "$out"
+#            return "$code"
+#        fi
+#    done <<'EOF'
+#80	does not have a playlists tab
+#81	playlists: Unable to download webpage: HTTP Error 404
+#82	confirm your age
+#83	not a bot
+#84	cookies-from-browser|cookies for the authentication
+#85	members?-only|join this channel
+#86	private video|this video is private
+#87	video unavailable|this video is not available
+#88	content isn’t available|content isn.t available
+#89	http error 4[0-9]{2}
+#90	unable to download
+#91	sign in to
+#EOF
+#
+#    return 0
+#}
+#
+#ytdlp_capture() {
+#    local err out status=0 classified=0
+#
+#    err="$(mktemp)" || return 1
+##{
+##    echo "argc=$#"
+##    printf '<%s>\n' "$@"
+##} >&2
+#
+#    out="$("$@" 2>|"$err")" || status=$?
+#    err_text="$(cat -- "$err" 2>/dev/null ||:)"
+#    rm --force -- "$err"
+#
+#    ytdlp_classify "$out" "$err_text" "$@" || classified=$?
+#    if (( classified != 0 )); then
+#        return "$classified"
+#    fi
+#
+#    if (( status > 0 )); then
+#        log_handler "yt-dlp failed ($status): $*"
+#        [[ -n "$err_text" ]] && log_handler "$err_text"
+#        [[ -n "$out" ]] && log_handler "$out"
+#        return "$status"
+#    fi
+#
+#    ytdlp_out="$out"
+#    return 0
+#}
+#
+#declare -g ytdlp_out=""
+#
+#ytdlp_json() {
+#    ytdlp_out=""
+#    ytdlp_capture "$@" || return $?
+#    if ! jq -e 'type == "object" or type == "array"' >/dev/null 2>&1 <<<"$ytdlp_out"; then
+#        log_handler "yt-dlp not json: $*"
+#        log_handler "$ytdlp_out"
+#        return "$YTDLP_NOT_JSON"
+#    fi
+#    printf '%s' "$ytdlp_out"
+#    return 0
+#}
+#
+#ytdlp_text() {
+#    ytdlp_out=""
+#    ytdlp_capture "$@" || return $?
+#    printf '%s' "$ytdlp_out"
+#    return 0
+#}
 
 function get_video_data_of_url(){
 	local video_url="$1"
 	local cache_directory_name="$2"
+	local lookup_only="${3:-false}"
 
 	local cache_directory="$application_var_directory/playlist-cache/"
 	mkdir --parents -- "$cache_directory/$cache_directory_name/" || exit 1
@@ -210,78 +644,347 @@ function get_video_data_of_url(){
 		((i += segment_size)) ||:
 	done
 
-	local cache_file="$cache_directory/$cache_directory_name/${path%/}/${encoded_url_for_filename}.txt"
+	local cache_file="$cache_directory/$cache_directory_name/${path%/}/$encoded_url_for_filename.txt"
 
-	local fast="--sleep-requests 0 --sleep-interval 0"
-	local json
 	local video_id channel_id
+	if ! cache_is_valid "$cache_file" "$video_url" "$lookup_only"; then
+		mapfile -d '' -t site_configuration < <(determinate_site_configuration "$video_url")
 
-	if [[ ! -f "$cache_file" ]]; then
-		json="$(yt-dlp $fast --dump-single-json --simulate --no-download-archive --no-warnings --flat-playlist -- "$video_url" 2>"/dev/null")"
-		#echo "$json" >> "$cache_file.json"
+		local json
+		local status=0
+		json="$(ytdlp_json yt-dlp $yt_dlp_fast "${site_configuration[@]}" --dump-single-json --flat-playlist -- "$video_url")" || status=$?
+        if (( status > 0 )); then
+			#__error "get_video_data_of_url: %s" "$(cat -- "$handler_error_file")"
+			return "$status"
+        fi
+        channel_id="$(jq -r '.channel_id // empty' <<< "$json")"
+        if [[ -z "$channel_id" ]]; then
+        	log_handler "detected channel id empty: $channel_id"
+		fi
 
-        channel_id="$(jq -r '.channel_id // ""' <<< "$json")"
-        local video_ids=()
-        while IFS= read -r line; do
-            if [[ -n "$line" ]]; then
-                 video_ids+=("$line")
-            fi
-        done < <(jq -r 'if (.entries? | type) == "array" then .entries[].id else .id end // ""' <<< "$json")
+		local video_ids=()
+		while IFS= read -r line; do
+			if [[ -n "$line" ]]; then
+				 video_ids+=("$line")
+			fi
+		done < <(jq -r 'if (.entries? | type) == "array" then .entries[].id else .id end // ""' <<< "$json")
 
 		mkdir --parents -- "$(dirname -- "$cache_file")" || exit 1
-        {
-            echo "$channel_id"
-            printf '%s\n' "${video_ids[@]}"
-        } >| "$cache_file"
+		{
+			echo "$channel_id"
+			printf '%s\n' "${video_ids[@]}"
+		} >| "$cache_file"
 	fi
 
 	mapfile -t lines < "$cache_file"
 	if (( ${#lines[@]} < 2 )); then
-		rm -- "$cache_file"
+		rm --force -- "$cache_file"
 		return 1
 	fi
 
 	echo "$cache_file"
+	return 0
 }
 
-# returns video URL with &list= appended if exactly one matching playlist is found
-function handle_youtube_url(){
+handle_youtube_url() {
+    local -n url_array_reference=$1
+    local parameter_url="$2"
+    local parameter_url_unsanitized="$3"
+    local possibly_original_playlist_id="$4"
+
+	__verbose "Looking for a playlist URL for the youtube video from the same channel %s" "$parameter_url"
+	queue_suffix=""
+
+    local url_list
+    url_list="$(mktemp)" || return 1
+
+	local status
+    __handle_youtube_url_main "$parameter_url" "$possibly_original_playlist_id" >| "$url_list"
+    status=$?
+
+    if (( status == 0 )); then
+    	readarray -t url_array_reference < "$url_list"
+		local channel_id="${url_array_reference[0]:-}"
+		url_array_reference=("${url_array_reference[@]:1}")
+		url_array_length="${#url_array_reference[@]}"
+
+		if (( url_array_length == 0 )); then
+			:
+		elif (( url_array_length == 1 )); then
+			if [[ "${url_array_reference[0]}" != "$parameter_url" ]]; then
+				url_changed=true
+				__verbose "New video URL %s" "$parameter_url"
+			fi
+		else
+			queue_suffix="$channel_id"
+		fi
+	else
+		__warn "URL %s failed!" "$parameter_url"
+
+		if [[ -f "$known_failed_file_log" ]] && grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null"; then
+			__warn "URL %s IS A KNOWN FAIL!" "$parameter_url"
+		fi
+
+		echo "$parameter_url_unsanitized" >> "$current_fails_file_log"
+
+		if [[ -f "$known_failed_file_log" && -f "$failed_file_log" ]] && ! grep --quiet -- "^$parameter_url_unsanitized$" "$known_failed_file_log" > "/dev/null" && ! grep --quiet -- "^$parameter_url_unsanitized$" "$failed_file_log" > "/dev/null"; then
+			echo "$parameter_url_unsanitized" >> "$failed_file_log"
+		elif [[ ! -f "$known_failed_file_log" ]]; then
+			if [[ -f "$failed_file_log" ]]; then
+				if ! grep --quiet -- "^$parameter_url_unsanitized$" "$failed_file_log" > "/dev/null"; then
+					echo "$parameter_url_unsanitized" >> "$failed_file_log"
+				fi
+			elif [[ ! -f "$failed_file_log" ]]; then
+				echo "$parameter_url_unsanitized" >> "$failed_file_log"
+			fi
+		fi
+
+		return 0
+	fi
+}
+
+function __handle_youtube_url_main(){
 	local video_url="$1"
+	local possibly_original_playlist_id="$2"
 
 	local cache_directory="$application_var_directory/playlist-cache/"
-	mkdir --parents -- "$cache_directory/channels/" || exit 1
+	mkdir --parents -- "$cache_directory/channel-playlists/" || exit 1
+	mkdir --parents -- "$cache_directory/channel-videos/" || exit 1
 	mkdir --parents -- "$cache_directory/playlists/" || exit 1
 
-	if [[ "$video_url" =~ v=([a-zA-Z0-9_\-]+) ]]; then
+	local is_channel=false channel_id=""
+
+	if [[ "$video_url" =~ /@([a-zA-Z0-9_-]+) ]]; then
+		is_channel=true
+
+		mapfile -d '' -t site_configuration < <(determinate_site_configuration "$video_url")
+		local json
+		local status=0
+		json="$(ytdlp_json yt-dlp $yt_dlp_fast "${site_configuration[@]}" --dump-single-json --flat-playlist --playlist-end 1 -- "$video_url")" || status=$?
+
+        if (( status > 0 )); then
+			(exit "$status")
+        fi
+
+		channel_id="$(jq -r '.channel_id // ""' <<< "$json")"
+	elif [[ "$video_url" =~ /channel/([A-Za-z0-9_-]+) ]]; then
+		is_channel=true
+		channel_id="${BASH_REMATCH[1]}"
+	fi
+
+	local playlist_tab_exists
+	playlist_tab_exists=2
+
+	if [[ -n "$channel_id" ]]; then
+		mapfile -d '' -t site_configuration < <(determinate_site_configuration "https://www.youtube.com/channel/${channel_id}/playlists")
+		ytdlp_text yt-dlp $yt_dlp_fast "${site_configuration[@]}" --flat-playlist --playlist-end 1 --print "id" -- "https://www.youtube.com/channel/${channel_id}/playlists"
+		status=$?
+
+		if (( status == YTDLP_NO_PLAYLISTS || status == YTDLP_PLAYLISTS_404 )); then
+			playlist_tab_exists=0
+		elif (( status == 0 )); then
+			playlist_tab_exists=1
+		elif (( status > 0 )); then
+			#__error "%s" "$(cat -- "$handler_error_file")"
+			#return "$status"
+			(exit "$status")
+		fi
+    fi
+
+	if $is_channel; then
+		if [[ -z "$channel_id" ]]; then
+			return 1
+		fi
+
+		local channel_videos_cache
+		local c1="${channel_id:2:2}"
+		local c2="${channel_id:4:2}"
+		local c3="${channel_id:6:2}"
+		local c4="${channel_id:8:2}"
+		local c5="${channel_id:10:2}"
+		channel_videos_cache="$cache_directory/channel-videos/${c1}/${c2}/${c3}/${c4}/${c5}/${channel_id}_videos.txt"
+		local channel_url
+		channel_url="https://www.youtube.com/channel/${channel_id}"
+		if cache_is_valid "$channel_videos_cache" "$channel_url"; then
+			videos="$(cat -- "$channel_videos_cache")"
+		else
+			mapfile -d '' -t site_configuration < <(determinate_site_configuration "$channel_url")
+			videos="$(ytdlp_text yt-dlp $yt_dlp_fast "${site_configuration[@]}" --flat-playlist --print "id" -- "$channel_url")"
+            status=$?
+            if (( status > 0 )); then
+                 (exit "$status")
+            fi
+
+			mkdir --parents -- "$(dirname -- "$channel_videos_cache")" || exit 1
+			printf '%s\n' "$videos" >| "$channel_videos_cache"
+		fi
+
+		echo "$channel_id"
+
+		local video_id
+		local fail_status=0
+		local count=0
+		local all_videos_failed=true
+		while IFS= read -r video_id; do
+			[[ -z "$video_id" ]] && continue
+			((count++))
+			local single_url="https://www.youtube.com/watch?v=${video_id}"
+			if ! youtube_get_combined_playlist_video_url "$playlist_tab_exists" "$single_url" "$possibly_original_playlist_id"; then
+				fail_status=$?
+			else
+				all_videos_failed=false
+			fi
+		done < "$channel_videos_cache"
+		if ((count==0)); then
+			fail_status=1
+		elif ((count==1)) || ( ((count>1)) && $all_videos_failed ); then
+			:
+		else
+			fail_status=0
+		fi
+
+		return "$fail_status"
+	fi
+
+	echo "$channel_id"
+
+	local status=0
+	youtube_get_combined_playlist_video_url "$playlist_tab_exists" "$video_url" "$possibly_original_playlist_id" || status=$?
+	return "$status"
+}
+
+#@ todo fixme if url is new and  playlist cache exists or channel cache the cache is invalid automatically!
+
+cache_is_valid() {
+    local file="${1-}"
+    local url="${2:-}"
+    local lookup_only="${3:-false}"
+
+    [[ -n "$file" && -f "$file" ]] || return 1
+    
+    $lookup_only && return 0
+
+    local cache_ttl=3600
+
+	hostname="$(get_hostname_by_url "$url")" || hostname=""
+	link_kind="$(detect_link_kind "$hostname" "$url")" || link_kind=""
+
+    if $clean_outdated_cache; then
+    	if [[ "$link_kind" == "video" ]]; then
+			if $video_cache_expires; then
+				cache_ttl="$cache_video_time_to_live" # 1 year
+			else
+				return 0 # cache does not invalidate
+			fi
+		else
+			cache_ttl="$cache_other_time_to_live" # 1 hour
+		fi
+	else
+		if [[ "$link_kind" == "video" ]]; then
+			return 0 # cache does not invalidate
+		fi
+		if $other_cache_expires; then
+			cache_ttl="$cache_other_time_to_live" # 1 hour
+		fi
+
+		return 0 # cache does not invalidate
+	fi
+
+    [[ -n "${cache_ttl-}" ]] || return 1
+
+	local mtime
+    mtime="$(stat -c "%Y" -- "$file")" || return 1
+
+    local now
+    now="$(date "+%s")" || return 1
+
+    (( now - mtime < cache_ttl ))
+}
+
+function youtube_get_combined_playlist_video_url(){
+	local playlist_tab_exists="$1"
+	local video_url="$2"
+	local possibly_original_playlist_id="$3"
+
+	local cache_directory="$application_var_directory/playlist-cache/"
+
+	if [[ "$video_url" =~ v=([a-zA-Z0-9_-]+) ]]; then
 		video_id="${BASH_REMATCH[1]}"
-	elif [[ "$video_url" =~ playlist\?list=([a-zA-Z0-9_\-]+) ]]; then
+	elif [[ "$video_url" =~ playlist\?list=([a-zA-Z0-9_-]+) ]]; then
+		echo "$video_url"
 		return 0
 	else
+		__error "youtube_get_combined_playlist_video_url::should not happen |URL=%s" "$video_url"
+		local_exit_failsafe
+
 		return 1
 	fi
-	local fast="--sleep-requests 0 --sleep-interval 0"
+
+	if [[ -n "$possibly_original_playlist_id" ]]; then
+    	echo "https://youtube.com/watch?v=${video_id}&list=$possibly_original_playlist_id"
+    	return 0
+    fi
+
+	log_handler "Looking up: $video_url"
 
 	local video_id channel_id
 	local cache_file
-	if ! cache_file="$(get_video_data_of_url "$video_url" "urls")"; then
-		return 1
-	fi
 
-    mapfile -t lines < "$cache_file"
+	local status=0
+	cache_file="$(get_video_data_of_url "$video_url" "urls")" || status=$?
+
+    if (( status == 0 )); then
+        :
+    elif (( status >= 80 && status <= 92 )); then
+        return "$status"
+    else
+        __error "youtube_get_combined_playlist_video_url::should not happen 2=%s STATUS=%s |URL=%s" "$ytdlp_out" "$status" "$video_url"
+        local_exit_failsafe
+        return 1
+    fi
+
+#	if ! cache_file="$(get_video_data_of_url "$video_url" "urls")" || status=$?; then
+#		    if (( status >= 80 && status <= 92 )); then
+#				__error "URL PROBLEM=%s | URL=%s" "$ytdlp_out" "$video_url"
+#				local_exit_failsafe
+#            elif (( status > 0 )); then
+#				__error "youtube_get_combined_playlist_video_url::should not happen 2 |URL=%s" "$video_url"
+#				local_exit_failsafe
+#            fi
+#
+#		return 1
+#	fi
+
+	mapfile -t lines < "$cache_file"
 
 	local i=0
+	channel_id=""
+	video_id=""
 	for line in "${lines[@]}"; do
 		if (( i == 0 )); then
 			channel_id="$line"
-		else
+		elif [[ -n "$line" ]]; then
 			video_id="$line"
 		fi
 		(( i++ )) ||:
 	done
 
-	if [[ -z "$video_id" || -z "$video_id" ]]; then
-		rm -- "$cache_file"
+	if [[ -z "$channel_id" || -z "$video_id" ]]; then
+		file1="$(cat -- "$cache_file")"
+		rm --force -- "$cache_file"
+
+		file2="$(cat -- "$HANDLER_ERROR_FILE")"
+		echo -n >| "$HANDLER_ERROR_FILE"
+
+		__error "Playlist cache was defect for URL=%s PLAYLIST_ID=%s\nCACHE FILE=%s\nHANDLER_LOG=%s" "$video_url" "$possibly_original_playlist_id" "$file1" "$file2"
+		local_exit_failsafe
+
 		return 1
+	fi
+
+	if (( playlist_tab_exists == 0 )); then
+		echo "https://youtube.com/watch?v=${video_id}"
+		return 0
 	fi
 
 	local playlists
@@ -291,13 +994,25 @@ function handle_youtube_url(){
 	local c4="${channel_id:8:2}"
 	local c5="${channel_id:10:2}"
 	local playlists_cache
-	playlists_cache="$cache_directory/channels/${c1}/${c2}/${c3}/${c4}/${c5}/${channel_id}.txt"
-	if [[ ! -f "$playlists_cache" ]]; then
-		playlists="$(yt-dlp $fast --flat-playlist --print "%(id)s" -- "https://www.youtube.com/channel/${channel_id}/playlists" 2>"/dev/null")"
-		mkdir --parents -- "$(dirname -- "$playlists_cache")" || exit 1
-		echo "$playlists" >| "$playlists_cache"
-	else
+	playlists_cache="$cache_directory/channel-playlists/${c1}/${c2}/${c3}/${c4}/${c5}/${channel_id}.txt"
+	local playlists_url
+	playlists_url="https://www.youtube.com/channel/${channel_id}/playlists"
+	if cache_is_valid "$playlists_cache" "$playlists_url"; then
 		playlists="$(cat -- "$playlists_cache")"
+	else
+		mapfile -d '' -t site_configuration < <(determinate_site_configuration "$playlists_url")
+		playlists="$(ytdlp_text yt-dlp $yt_dlp_fast "${site_configuration[@]}" --flat-playlist --print "id" -- "$playlists_url")"
+        status=$?
+		if (( status == YTDLP_NO_PLAYLISTS || status == YTDLP_PLAYLISTS_404 )); then
+			playlist_tab_exists=0
+			echo "$video_url"
+			return 0
+		elif (( status > 0 )); then
+			(exit "$status")
+		fi
+
+		mkdir --parents -- "$(dirname -- "$playlists_cache")" || exit 1
+		printf '%s\n' "$playlists" >| "$playlists_cache"
 	fi
 
 	local found_playlist_id=""
@@ -313,13 +1028,20 @@ function handle_youtube_url(){
 		local p4="${channel_id:8:2}"
 		local p5="${channel_id:10:2}"
 		playlist_cache="$cache_directory/playlists/${p1}/${p2}/${p3}/${p4}/${p5}/${channel_id}/${playlist_id}.txt"
-
-		if [[ ! -f "$playlist_cache" ]]; then
-			playlist_data="$(yt-dlp $fast --flat-playlist --print id -- "https://www.youtube.com/playlist?list=$playlist_id" 2>"/dev/null")"
-			mkdir --parents -- "$(dirname -- "$playlist_cache")" || exit 1
-			echo "$playlist_data" >| "$playlist_cache"
-		else
+		local playlist_url
+		playlist_url="https://www.youtube.com/playlist?list=$playlist_id"
+		if cache_is_valid "$playlist_cache" "$playlist_url"; then
 			playlist_data="$(cat -- "$playlist_cache")"
+		else
+			mapfile -d '' -t site_configuration < <(determinate_site_configuration "$playlist_url")
+			playlist_data="$(ytdlp_text yt-dlp $yt_dlp_fast "${site_configuration[@]}" --flat-playlist --print "id" -- "$playlist_url")"
+			status=$?
+			if (( status > 0 )); then
+				(exit "$status")
+			fi
+
+			mkdir --parents -- "$(dirname -- "$playlist_cache")" || exit 1
+			printf '%s\n' "$playlist_data" >| "$playlist_cache"
 		fi
 
 		if echo "$playlist_data" | grep --quiet --fixed-strings --line-regexp -- "$video_id" > "/dev/null"; then
@@ -333,4 +1055,387 @@ function handle_youtube_url(){
 	else
 		echo "https://youtube.com/watch?v=${video_id}"
 	fi
+}
+
+escape_for_double_quotes() {
+	local value="$1"
+	value="${value//\\/\\\\}"      # \  → \\
+	value="${value//\"/\\\"}"      # "  → \"
+	value="${value//$'\n'/\\n}"    # newline → \n
+	printf '%s' "$value"
+}
+
+unescape_for_double_quotes() {
+	local value="$1"
+	value="${value//\\n/$'\n'}"    # \n  → actual newline
+	value="${value//\\\"/\"}"      # \"  → "
+	value="${value//\\\\/\\}"      # \\  → \
+	printf '%s' "$value"
+}
+
+serialize_map_into_arguments() {
+	local -n hashmap=$1
+	local order_name="${2:-}"
+
+	local output=""
+
+	if [[ -n "$order_name" ]] && declare -p "$order_name" &>"/dev/null"; then
+		# Use provided order array (preserves original order)
+		local -n order_array="$order_name"
+		for key in "${order_array[@]}"; do
+			if [[ -v hashmap[$key] ]]; then
+				local value="${hashmap[$key]}"
+				local escaped
+				escaped="$(escape_for_double_quotes "$value")"
+				output+="\"${escaped}\" "
+			fi
+		done
+	else
+		# No order array provided → use default (unordered) iteration
+		for key in "${!hashmap[@]}"; do
+			local value="${hashmap[$key]}"
+			local escaped
+			escaped="$(escape_for_double_quotes "$value")"
+			output+="\"${escaped}\" "
+		done
+	fi
+
+	printf '%s' "${output% }"
+}
+
+serialize_array_into_arguments() {
+	local output=""
+
+	for pair in "$@"; do
+		local value="$pair"
+		local escaped
+		escaped="$(escape_for_double_quotes "$value")"
+		output+="\"${escaped}\" "
+	done
+
+	printf '%s' "${output% }"
+}
+
+serialize_array() {
+	local output=""
+
+	for pair in "$@"; do
+		if [[ "$pair" =~ ^([^=]+)=(.*)$ ]]; then
+			local key="${BASH_REMATCH[1]}"
+			local value="${BASH_REMATCH[2]}"
+
+			local escaped
+			escaped="$(escape_for_double_quotes "$value")"
+			output+="${key}=\"${escaped}\" "
+		else
+			__warn "Warning: Invalid pair (no '='): %s" "$pair"
+		fi
+	done
+
+	printf '%s' "${output% }"
+}
+
+serialize_into_key_value_pairs_todo() {
+	local output=""
+	local order_name="${2:-}"
+
+	if [[ -n "$order_name" ]] && declare -p "$order_name" &>"/dev/null"; then
+		# Use provided order array
+		local -n order_array="$order_name"
+		for pair in "${order_array[@]}"; do
+			if [[ "$pair" =~ ^([^=]+)=(.*)$ ]]; then
+				local key="${BASH_REMATCH[1]}"
+				local value="${BASH_REMATCH[2]}"
+
+				local escaped
+				escaped="$(escape_for_double_quotes "$value")"
+				output+="${key}=\"${escaped}\" "
+			else
+				__warn "Warning: Invalid pair (no '='): %s" "$pair"
+			fi
+		done
+	else
+		# Default behavior: process arguments in the order they were passed
+		for pair in "$@"; do
+			if [[ "$pair" =~ ^([^=]+)=(.*)$ ]]; then
+				local key="${BASH_REMATCH[1]}"
+				local value="${BASH_REMATCH[2]}"
+
+				local escaped
+				escaped="$(escape_for_double_quotes "$value")"
+				output+="${key}=\"${escaped}\" "
+			else
+				__warn "Warning: Invalid pair (no '='): %s" "$pair"
+			fi
+		done
+	fi
+
+	printf '%s' "${output% }"
+}
+
+serialize_map() {
+	local -n hashmap=$1
+	local order_name="${2:-}"          # Name of the order array (optional)
+
+	local output=""
+
+	if [[ -n "$order_name" ]] && declare -p "$order_name" &>"/dev/null"; then
+		# Use provided order array (preserves original order)
+		local -n order_array="$order_name"
+		for key in "${order_array[@]}"; do
+			if [[ -v hashmap[$key] ]]; then
+				local value="${hashmap[$key]}"
+				local escaped
+				escaped="$(escape_for_double_quotes "$value")"
+				output+="${key}=\"${escaped}\" "
+			fi
+		done
+	else
+		# No order array provided → use default (unordered) iteration
+		for key in "${!hashmap[@]}"; do
+			local value="${hashmap[$key]}"
+			local escaped
+			escaped="$(escape_for_double_quotes "$value")"
+			output+="${key}=\"${escaped}\" "
+		done
+	fi
+
+	printf '%s' "${output% }"   # remove trailing space
+}
+
+#
+#unserialize_into_map() {
+#	local line="$1"
+#	local -n result=$2
+#	local -n order=$3           # indexed array (preserves original order)
+#
+#	declare -gA result
+#	result=()
+#	declare -ga order
+#	order=()
+#
+#	local pos=0
+#	local len=${#line}
+#
+#	while (( pos < len )); do
+#		# Skip whitespace between pairs
+#		while (( pos < len )); do
+#			local c="${line:pos:1}"
+#			if [[ "$c" != " " && "$c" != $'\t' ]]; then
+#				break
+#			fi
+#			((pos++))||:
+#		done
+#
+#		if (( pos >= len )); then break; fi
+#
+#		# Read key until '='
+#		local key=""
+#		while (( pos < len )); do
+#			local c="${line:pos:1}"
+#			if [[ "$c" == "=" ]]; then
+#				((pos++))||:
+#				break
+#			fi
+#			key+="$c"
+#			((pos++))||:
+#		done
+#
+#		if (( pos >= len )); then break; fi
+#
+#		# Expect opening quote
+#		local c="${line:pos:1}"
+#		if [[ "$c" != '"' ]]; then
+#			((pos++))||:
+#			continue
+#		fi
+#		((pos++))||:
+#
+#		# Read value until closing unescaped quote
+#		local value=""
+#		local escaped=0
+#
+#		while (( pos < len )); do
+#			local c="${line:pos:1}"
+#			((pos++))||:
+#
+#			if (( escaped )); then
+#				case "$c" in
+#					'"') value+='"' ;;
+#					'\') value+='\' ;;
+#					'n') value+=$'\n' ;;
+#					*)   value+="\\$c" ;;
+#				esac
+#				escaped=0
+#			elif [[ "$c" == "\\" ]]; then
+#				escaped=1
+#			elif [[ "$c" == '"' ]]; then
+#				break
+#			else
+#				value+="$c"
+#			fi
+#		done
+#
+#		if [[ -n "$key" ]]; then
+#			result["$key"]="$value"
+#			order+=("$key")
+#		fi
+#	done
+#}
+
+unserialize_into_map() {
+    local line="$1"
+    local -n result=$2
+    local order_name="${3:-}"
+
+    if [[ -n "$order_name" ]] && declare -p "$order_name" &>"/dev/null"; then
+        local -n order_array="$order_name"
+    elif [[ -n "$order_name" ]]; then
+        declare -ga "$order_name"
+        local -n order_array="$order_name"
+    fi
+
+    local order_length=0
+    if [[ ! -v order_array[@] ]]; then
+        order_array=()
+    fi
+
+    order_length="${#order_array[@]}"
+
+    declare -gA result
+    result=()
+
+    local pos=0
+    local len=${#line}
+    local has_keys=0
+    local order_index=0
+
+    # ====================== Parse the line ======================
+    while (( pos < len )); do
+         # Skip whitespace
+         while (( pos < len )); do
+             local c="${line:pos:1}"
+             if [[ "$c" != " " && "$c" != $'\t' ]]; then break; fi
+             ((pos++))||:
+         done
+         if (( pos >= len )); then break; fi
+
+         local start_pos=$pos
+         local key=""
+
+         # Try to read key
+         while (( pos < len )); do
+             local c="${line:pos:1}"
+             if [[ "$c" == "=" ]]; then
+                 has_keys=1
+                 key="${line:start_pos:pos-start_pos}"
+                 ((pos++))||:
+                 break
+             fi
+             if [[ "$c" == '"' ]]; then
+                 break
+             fi
+             ((pos++))||:
+         done
+
+         # If no key was found, reset position
+         if [[ $has_keys -eq 0 ]]; then
+             pos=$start_pos
+             key=""
+         fi
+
+         # Expect opening quote
+         local c="${line:pos:1}"
+         if [[ "$c" != '"' ]]; then
+             ((pos++))||:
+             continue
+         fi
+         ((pos++))||:
+
+         # Read value
+         local value=""
+         local escaped=0
+
+         while (( pos < len )); do
+             local c="${line:pos:1}"
+             ((pos++))||:
+
+             if (( escaped )); then
+                 case "$c" in
+                     '"') value+='"' ;;
+                     '\') value+='\' ;;
+                     'n') value+=$'\n' ;;
+                     *)   value+="\\$c" ;;
+                 esac
+                 escaped=0
+             elif [[ "$c" == "\\" ]]; then
+                 escaped=1
+             elif [[ "$c" == '"' ]]; then
+                 break
+             else
+                 value+="$c"
+             fi
+         done
+
+        if [[ $has_keys -eq 0 && "$value" == *"="* ]]; then
+            if [[ "$value" =~ ^([^=]+)=(.*)$ ]]; then
+                key="${BASH_REMATCH[1]}"
+                value="${BASH_REMATCH[2]}"
+                has_keys=1
+            fi
+        fi
+
+         # Assign to map
+         if [[ $has_keys -eq 1 ]]; then
+             # Key was present in string
+             result["$key"]="$value"
+             order_array+=("$key")
+         else
+             # No key in string → use next key from order_array
+             if (( order_index >= order_length )); then
+                 echo "ERROR: Not enough keys in order array for bare value at position $order_index" >&2
+                 return 1
+             fi
+             key="${order_array[$order_index]}"
+             result["$key"]="$value"
+             ((order_index++))||:
+         fi
+
+         has_keys=0
+     done
+ }
+
+extract_hashmap_to_locals() {
+	local -n hashmap=$1
+	local prefix="${2:-}"
+
+	for key in "${!hashmap[@]}"; do
+		local var_name="${prefix}${key}"
+		printf -v "$var_name" '%s' "${hashmap[$key]}"
+	done
+}
+
+dump_map() {
+	local -n hashmap=$1
+	local order_name="${2:-}"
+
+	if [[ -n "$order_name" ]] && declare -p "$order_name" &>"/dev/null"; then
+		local -n order_array="$order_name"
+		for key in "${order_array[@]}"; do
+			if [[ -v hashmap[$key] ]]; then
+				printf '  %-12s = [%s]\n' "$key" "${hashmap[$key]}"
+			fi
+		done
+	else
+		for key in "${!hashmap[@]}"; do
+			printf '  %-12s = [%s]\n' "$key" "${hashmap[$key]}"
+		done
+	fi
+}
+
+dump_array() {
+	local -n array="$1"
+	for value in "${array[@]}"; do
+		printf '  %-12q \n' "$value"
+	done
 }

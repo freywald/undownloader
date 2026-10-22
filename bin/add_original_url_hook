@@ -1,0 +1,35 @@
+#!/bin/bash
+
+set -euo pipefail
+
+youtube_dlp_original_url="$1"
+main_file="$2"
+real_original_url="$3"
+
+if [[ -z "$main_file" ]]; then
+	echo "argument main_file from position 2 is not set"
+	exit 1
+fi
+
+files_download_directory="$(dirname -- "$main_file")"
+
+json_files=("$files_download_directory/"*".info.json")
+if (( ${#json_files[@]} == 0 )); then
+	echo "No *.json file found in $files_download_directory"
+	exit 1
+elif (( ${#json_files[@]} > 1 )); then
+	echo "Multiple *.json files found in $files_download_directory (expected exactly one)"
+	exit 1
+else
+	json_file="${json_files[0]}"
+
+	if [[ -f "$json_file.original.json" ]]; then
+		json_file="$json_file.original.json"
+	else
+		 cp -- "$json_file" "$json_file.original.json"
+	fi
+
+	jq --arg url "$real_original_url" '. + { "__undownloader_original_url": $url }' "$json_file" > "$json_file.tmp" && mv --  "$json_file.tmp" "$json_file"
+
+	echo "✓ Added __undownloader_original_url to $json_file"
+fi

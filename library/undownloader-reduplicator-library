@@ -1,0 +1,592 @@
+#!/bin/bash
+
+base_directory="/home/$USER/Daten/var/undownloader-reduplicator"
+matches_backup=""
+matches_file_restore_to=""
+
+media_extensions=(
+	"mp4" "mkv" "webm" "mov" "avi" "flv"
+	"m4a" "mka" "mp3" "aac" "ogg" "opus" "wav"
+	"3gp" "m4v"
+	"mpg" "mpeg" "wmv" "asf" "ts" "m2ts" "mts" "vob" "ogv" "3g2" "f4v"
+	"flac" "wma" "ac3" "eac3" "dts" "aiff" "aif" "ape" "oga" "weba"
+)
+
+declare -A purl_id_cache=()
+declare -A purl_id_have=()
+
+is_ignored_sidecar() {
+	local base="${1##*/}"
+	[[ "$base" == *.info.json.original.json ]]
+}
+
+is_known_media_ext() {
+	local ext="${1,,}"
+	local known
+
+	for known in "${media_extensions[@]}"; do
+		[[ "$ext" == "$known" ]] && return 0
+	done
+	return 1
+}
+
+log_warning() {
+	printf '%s\n' "$1" >> "$warnings"
+	if [[ -n "${2-}" ]]; then
+		printf '%s\n' "$1" >> "$2"
+	fi
+}
+
+log_error() {
+	printf '%s\n' "$1"
+	printf '%s\n' "$1" >> "$errors"
+	if [[ -n "${2-}" ]]; then
+		printf '%s\n' "$1" >> "$2"
+	fi
+}
+
+mask_path() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+unmask_path() {
+    local s="$1"
+    local out=""
+    local i=0
+    local len="${#s}"
+    local c n
+
+    while (( i < len )); do
+        c="${s:i:1}"
+        if [[ "$c" == '\' ]]; then
+            n="${s:i+1:1}"
+            case "$n" in
+                n)  out+=$'\n'; i=$((i + 2)) ||: ;;
+                r)  out+=$'\r'; i=$((i + 2)) ||: ;;
+                t)  out+=$'\t'; i=$((i + 2)) ||: ;;
+                \\) out+='\';   i=$((i + 2)) ||: ;;
+                *)  out+="$c";  i=$((i + 1)) ||: ;;
+            esac
+            continue
+        fi
+        out+="$c"
+        i=$((i + 1)) ||:
+    done
+    printf '%s' "$out"
+}
+
+#mask_path() {
+#	local s="$1"
+#	s="${s//\\/\\\\}"
+#	s="${s//$'\n'/\\n}"
+#	printf '%s' "$s"
+#}
+#
+#unmask_path() {
+#	local s="$1"
+#	local out=""
+#	local i=0
+#	local len="${#s}"
+#	local c n
+#
+#	while (( i < len )); do
+#		c="${s:i:1}"
+#		if [[ "$c" == '\' ]]; then
+#			n="${s:i+1:1}"
+#			case "$n" in
+#				n)  out+=$'\n'; i=$((i + 2)) ||: ;;
+#				\\) out+='\';   i=$((i + 2)) ||: ;;
+#				*)  out+="$c";  i=$((i + 1)) ||: ;;
+#			esac
+#			continue
+#		fi
+#		out+="$c"
+#		i=$((i + 1)) ||:
+#	done
+#	printf '%s' "$out"
+#}
+
+is_match_file() {
+    local base="$1"
+
+    if [[ "$base" =~ [[:space:]]?–[[:space:]]?([a-zA-Z0-9_-]{11})(\.[a-zA-Z0-9_-]+)+$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+
+	if [[ "$base" =~ \[([^.]{11})\](\.[a-zA-Z0-9_-]+)+$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+
+    if [[ "$base" =~ \(([a-zA-Z0-9_-]{11})\)(\.[a-zA-Z0-9_-]+)+$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+	return 1
+}
+
+is_match_dir() {
+    local base="$1"
+
+	if [[ "$base" =~ [[:space:]]?–[[:space:]]?([a-zA-Z0-9_-]{11})$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+
+	if [[ "$base" =~ \[([^.]{11})\]$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+
+    if [[ "$base" =~ \(([a-zA-Z0-9_-]{11})\)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+	return 1
+}
+
+extract_media_purl() {
+	local file="$1"
+	local json url
+
+	[[ -f "$file" ]] || return 1
+
+	if command -v ffprobe >/dev/null; then
+		json="$(ffprobe -v error -show_entries format_tags:stream_tags -of json -- "$file" 2>/dev/null ||:)"
+		url="$(jq -r '
+			[
+				.format.tags // {},
+				(.streams[]?.tags // {})
+			]
+			| add
+			| .PURL // .purl // .podcast_url // .PODCAST_URL // .WEBSITE // .website // empty
+		' <<< "$json" 2>/dev/null | head -n 1)"
+		[[ "$url" != "null" && -n "$url" ]] && { printf '%s\n' "$url"; return 0; }
+	fi
+
+	if command -v mediainfo >/dev/null; then
+		json="$(mediainfo --Output=JSON -- "$file" 2>/dev/null ||:)"
+		url="$(jq -r '
+			.media.track[]?
+			| select(."@type" == "General")
+			| .extra.Podcast_Url // .extra.PURL // .PURL // .PodcastUrl // empty
+		' <<< "$json" 2>/dev/null | head -n 1)"
+		[[ "$url" != "null" && -n "$url" ]] && { printf '%s\n' "$url"; return 0; }
+	fi
+
+	return 1
+}
+
+parse_youtube_video_id() {
+	local s="$1"
+	[[ "$s" =~ youtube\.com/watch\?[^[:space:]]*v=([a-zA-Z0-9_-]{11}) ]] && { printf '%s\n' "${BASH_REMATCH[1]}"; return 0; }
+	[[ "$s" =~ youtu\.be/([a-zA-Z0-9_-]{11}) ]] && { printf '%s\n' "${BASH_REMATCH[1]}"; return 0; }
+	[[ "$s" =~ youtube\.com/(shorts|embed|v)/([a-zA-Z0-9_-]{11}) ]] && { printf '%s\n' "${BASH_REMATCH[2]}"; return 0; }
+	return 1
+}
+
+purl_id_of() {
+	local file="$1"
+	local purl id=""
+
+	if [[ -n "${purl_id_have[$file]:-}" ]]; then
+		if [[ -n "${purl_id_cache[$file]:-}" ]]; then
+			printf '%s\n' "${purl_id_cache[$file]}"
+		fi
+		return 0
+	fi
+	purl_id_have["$file"]=1
+
+	if purl="$(extract_media_purl "$file")" && id="$(parse_youtube_video_id "$purl")"; then
+		purl_id_cache["$file"]="$id"
+		printf '%s\n' "$id"
+	fi
+	return 0
+}
+
+declare -A comment_id_have=()
+declare -A comment_id_cache=()
+declare -A comment_id_status=()
+
+youtube_urls_from_text() {
+    local text="$1"
+    grep -oE \
+        'https?://(www\.|m\.|music\.)?(youtube\.com/watch\?[^[:space:]"'"'"'<>]+|youtube\.com/(shorts|embed|v)/[A-Za-z0-9_-]{11}|youtu\.be/[A-Za-z0-9_-]{11})' \
+        <<<"$text" 2>/dev/null \
+    | sed -E 's/[].,;:!?)]+$//' ||:
+}
+
+single_youtube_video_id_from_text() {
+    local text="$1"
+    local url id
+    local -A seen=()
+    local -a ids=()
+
+    [[ -n "$text" ]] || return 1
+
+    while IFS= read -r url; do
+        [[ -n "$url" ]] || continue
+        [[ "$url" == *list=* || "$url" == *playlist* || "$url" == *Playlist* ]] && continue
+        id="$(parse_youtube_video_id "$url" ||:)"
+        [[ "$id" =~ ^[a-zA-Z0-9_-]{11}$ ]] || continue
+        [[ -n "${seen[$id]:-}" ]] && continue
+        seen["$id"]=1
+        ids+=("$id")
+    done < <(youtube_urls_from_text "$text")
+
+    (( ${#ids[@]} == 1 )) || return 1
+    printf '%s\n' "${ids[0]}"
+}
+
+extract_media_text_fields() {
+    local file="$1"
+    local json text=""
+
+    [[ -f "$file" ]] || return 1
+
+    if command -v ffprobe >/dev/null; then
+        json="$(ffprobe -v error -show_entries format_tags:stream_tags -of json -- "$file" 2>/dev/null ||:)"
+        text="$(jq -r '
+            [
+                .format.tags // {},
+                (.streams[]?.tags // {})
+            ]
+            | add
+            | [
+                (.comment // .COMMENT // .Comment // empty),
+                (.synopsis // .SYNOPSIS // .Synopsis // empty),
+                (.description // .DESCRIPTION // .Description // empty)
+            ]
+            | map(select(. != null and . != ""))
+            | .[]
+        ' <<<"$json" 2>/dev/null ||:)"
+        [[ -n "$text" ]] && { printf '%s\n' "$text"; return 0; }
+    fi
+
+    if command -v mediainfo >/dev/null; then
+        json="$(mediainfo --Output=JSON -- "$file" 2>/dev/null ||:)"
+        text="$(jq -r '
+            .media.track[]?
+            | select(."@type" == "General")
+            | [
+                (.Comment // .extra.Comment // empty),
+                (.Synopsis // .extra.Synopsis // empty),
+                (.Description // .extra.Description // empty)
+            ]
+            | map(select(. != null and . != ""))
+            | .[]
+        ' <<<"$json" 2>/dev/null ||:)"
+        [[ -n "$text" ]] && { printf '%s\n' "$text"; return 0; }
+    fi
+
+    case "${file##*.}" in
+        ogg|oga|opus)
+            if command -v vorbiscomment >/dev/null; then
+                text="$(vorbiscomment -l -- "$file" 2>/dev/null \
+                    | grep -iE '^(comment|description|synopsis)=' \
+                    | cut -d= -f2- ||:)"
+                [[ -n "$text" ]] && { printf '%s\n' "$text"; return 0; }
+            fi
+            ;;
+    esac
+    return 1
+}
+
+# stdout: id
+# 0 = P agrees, 1 = no valid field, 2 = P members disagree
+extract_media_comment_id() {
+	local file="$1"
+	local field id first=""
+	local -a p_ids=()
+
+	while IFS= read -r field || [[ -n "$field" ]]; do
+		[[ -n "$field" ]] || continue
+		id="$(single_youtube_video_id_from_text "$field" ||:)"
+		[[ -n "$id" ]] || continue
+		p_ids+=("$id")
+	done < <(extract_media_text_fields "$file" ||:)
+
+	(( ${#p_ids[@]} > 0 )) || return 1
+
+	first="${p_ids[0]}"
+	for id in "${p_ids[@]}"; do
+		if [[ "$id" != "$first" ]]; then
+			return 2
+		fi
+	done
+
+	printf '%s\n' "$first"
+	return 0
+}
+
+tag_is_url_only() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [[ "$s" =~ ^https?://[^[:space:]]+$ ]]
+}
+
+comment_id_of() {
+    local file="$1"
+    local json raw id
+    local -A url_ids=()
+    local -A text_ids=()
+    local n_url=0 n_text=0
+
+    [[ -f "$file" ]] || return 1
+
+    collect_p_field() {
+        local raw="$1"
+        local id
+        [[ -n "$raw" && "$raw" != "null" ]] || return 0
+        id="$(parse_youtube_video_id "$raw")" || return 0
+        if tag_is_url_only "$raw"; then
+            url_ids["$id"]=1
+        else
+            text_ids["$id"]=1
+        fi
+    }
+
+    if command -v ffprobe >/dev/null; then
+        json="$(ffprobe -v error -show_entries format_tags:stream_tags -of json -- "$file" 2>/dev/null ||:)"
+        for key in COMMENT COMMENTS SYNOPSIS DESCRIPTION comment comments synopsis description; do
+            raw="$(jq -r --arg k "$key" '
+                [
+                    .format.tags // {},
+                    (.streams[]?.tags // {})
+                ] | add | .[$k] // empty
+            ' <<<"$json" 2>/dev/null ||:)"
+            collect_p_field "$raw"
+        done
+    fi
+
+    if (( ${#url_ids[@]} == 0 && ${#text_ids[@]} == 0 )) && command -v mediainfo >/dev/null; then
+        json="$(mediainfo --Output=JSON -- "$file" 2>/dev/null ||:)"
+        for key in Comment Comments Synopsis Description COMMENT COMMENTS SYNOPSIS DESCRIPTION; do
+            raw="$(jq -r --arg k "$key" '
+                .media.track[]?
+                | select(."@type" == "General")
+                | .[$k] // .extra[$k] // empty
+            ' <<<"$json" 2>/dev/null | head -n 1)"
+            collect_p_field "$raw"
+        done
+    fi
+
+    n_url="${#url_ids[@]}"
+    n_text="${#text_ids[@]}"
+
+    if (( n_url > 1 )); then
+        log_warning "URL-only COMMENT/COMMENTS/SYNOPSIS/DESCRIPTION ids disagree: ${file}" "${layout_log-}"
+        return 2
+    fi
+
+    if (( n_url == 1 )); then
+        url_id="${!url_ids[@]}"
+        if (( n_text > 1 )); then
+            log_warning "text COMMENT/COMMENTS/SYNOPSIS/DESCRIPTION ids disagree (URL-only ${url_id} used): ${file}" "${layout_log-}"
+        elif (( n_text == 1 )); then
+            text_id="${!text_ids[@]}"
+            if [[ "$text_id" != "$url_id" ]]; then
+                log_warning "URL-only tag id ${url_id} disagrees with text tag id ${text_id} (URL-only used): ${file}" "${layout_log-}"
+            fi
+        fi
+        printf '%s\n' "$url_id"
+        return 0
+    fi
+
+    if (( n_text > 1 )); then
+        log_warning "text COMMENT/COMMENTS/SYNOPSIS/DESCRIPTION ids disagree: ${file}" "${layout_log-}"
+        return 2
+    fi
+    if (( n_text == 1 )); then
+        printf '%s\n' "${!text_ids[@]}"
+        return 0
+    fi
+    return 1
+}
+
+#comment_id_of() {
+#	local file="$1"
+#	local id st=0
+#
+#	if [[ -n "${comment_id_have[$file]:-}" ]]; then
+#		if [[ -n "${comment_id_cache[$file]:-}" ]]; then
+#			printf '%s\n' "${comment_id_cache[$file]}"
+#		fi
+#		return "${comment_id_status[$file]:-1}"
+#	fi
+#	comment_id_have["$file"]=1
+#
+#	id="$(extract_media_comment_id "$file")" || st=$?
+#	comment_id_status["$file"]="$st"
+#	if (( st == 0 )) && [[ -n "$id" ]]; then
+#		comment_id_cache["$file"]="$id"
+#		printf '%s\n' "$id"
+#	fi
+#	return "$st"
+#}
+
+active_is_undownloaded() {
+    local p="${1%/}"
+    local part
+    while [[ -n "$p" && "$p" != "/" ]]; do
+        part="${p##*/}"
+        if [[ "$part" == *'🔴.undownloaded'* ]]; then
+            return 0
+        fi
+        p="${p%/*}"
+        [[ "$p" == "$part" ]] && break
+    done
+    return 1
+}
+
+backup_matches() {
+    local matches_file="$1"
+    local backup i=0
+
+    matches_backup=""
+    matches_file_restore_to="$matches_file"
+
+    [[ -f "$matches_file" ]] || return 0
+
+    backup="$run_dir/reduplicator-matches-$__current_date.backup.txt"
+    while [[ -e "$backup" || -L "$backup" ]]; do
+        i=$((i + 1)) ||:
+        backup="$run_dir/reduplicator-matches-${__current_date}.backup_${i}.txt"
+    done
+
+    mv -- "$matches_file" "$backup"
+    matches_backup="$backup"
+}
+
+restore_matches_from_backup() {
+    local dest="${1:-${matches_file_restore_to-}}"
+
+    [[ -n "$dest" ]] || return 0
+
+    if [[ -n "${matches_backup-}" && -e "$matches_backup" ]]; then
+        mv --force -- "$matches_backup" "$dest"
+    else
+        rm --force -- "$dest"
+    fi
+}
+
+file_stem() {
+	local base="${1##*/}"
+	local ext="${base##*.}"
+	ext="${ext,,}"
+	if is_known_media_ext "$ext"; then
+		printf '%s' "${base%.*}"
+	else
+		printf '%s' "$base"
+	fi
+}
+
+id_in_list() {
+	local needle="$1"
+	local id
+
+	while IFS= read -r id; do
+		[[ "$id" == "$needle" ]] && return 0
+	done
+	return 1
+}
+
+count_ids() {
+	printf '%s\n' "$1" | grep -c -- '.' ||:
+}
+
+count_media_in_dir() {
+	local dir="$1" f ext n=0
+	for f in "$dir"/*; do
+		[[ -f "$f" ]] || continue
+		ext="${f##*.}"; ext="${ext,,}"
+		is_known_media_ext "$ext" || continue
+		n=$((n + 1)) ||:
+	done
+	printf '%s' "$n"
+}
+
+dir_name_ok_for_unit() {
+	local dir="$1"
+	(( $(count_media_in_dir "$dir") == 1 ))
+}
+
+is_leaf_dir() {
+	local dir="$1" sub
+	for sub in "$dir"/*/; do
+		[[ -d "$sub" ]] && return 1
+	done
+	return 0
+}
+
+dir_has_video_id() {
+	local dir="$1"
+	local want="$2"
+	local stem="$3"
+	local found f json base
+
+	[[ -d "$dir" ]] || return 1
+	[[ -n "$stem" ]] || return 1
+
+	for f in "$dir"/*; do
+		[[ -f "$f" ]] || continue
+		is_ignored_sidecar "$f" && continue
+		base="${f##*/}"
+		[[ "$base" == "${stem}."* || "$base" == "$stem" ]] || continue
+		if found="$(is_match_file "$base")" && [[ "$found" == "$want" ]]; then
+			return 0
+		fi
+		found="$(purl_id_of "$f" ||:)"
+		if [[ "$found" == "$want" ]]; then
+			return 0
+		fi
+		if [[ -z "$found" ]]; then
+			if found="$(comment_id_of "$f")" && [[ "$found" == "$want" ]]; then
+				return 0
+			fi
+		fi
+	done
+
+	for json in "$dir"/*; do
+		[[ -f "$json" ]] || continue
+		is_ignored_sidecar "$json" && continue
+		base="${json##*/}"
+		[[ "$base" == "${stem}."* || "$base" == "$stem" ]] || continue
+		[[ "$base" == *.info.json || "$base" == *info.json ]] || continue
+		found="$(jq -r '
+			select((._type // "video") == "video")
+			| select(has("entries") | not)
+			| select(
+				(.extractor_key // .extractor // "")
+				| ascii_downcase
+				| test("youtube")
+			)
+			| .id // empty
+		' -- "$json" 2>/dev/null ||:)"
+		[[ "$found" == "$want" ]] && return 0
+	done
+
+	local media_n=0 f ext
+	for f in "$dir"/*; do
+		[[ -f "$f" ]] || continue
+		ext="${f##*.}"; ext="${ext,,}"
+		is_known_media_ext "$ext" || continue
+		media_n=$((media_n + 1)) ||:
+	done
+
+	if (( media_n == 1 )); then
+		local dir_id=""
+		dir_id="$(is_match_dir "${dir##*/}" ||:)"
+		[[ "$dir_id" == "$want" ]] && return 0
+	fi
+	return 1
+}

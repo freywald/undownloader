@@ -1,0 +1,148 @@
+#!/bin/bash
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../../")/library/base" || exit 1
+__set_script_path 1
+__enable_error_handler
+function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+source -- "$__script_path/library/undownloader-reduplicator-library" || exit 1
+
+if (( $# < 1 )); then
+	echo "Usage: $0 REFERENCE_MATCHES_TXT [ACTIVE_MATCHES_TXT]" >&2
+	echo "  Run from the active library. Reference library is not modified." >&2
+	echo "  Stdout: active video id:PATH lines whose video id exists in the reference list." >&2
+	exit 1
+fi
+arguments=()
+run_dir=""
+
+while (( $# > 0 )); do
+	case "$1" in
+		--run-dir)
+			if [[ -z "${2-}" || "$2" == -* ]]; then
+				echo "Usage: $0 [--run-dir DIR] REFERENCE_MATCHES_TXT" >&2
+				exit 1
+			fi
+			run_dir="$2"
+			shift 2 ||:
+			;;
+		--help)
+			echo "Usage: $0 [--run-dir DIR] REFERENCE_MATCHES_TXT" >&2
+			echo "  Run from the active library. Reference library is not modified." >&2
+			echo "  Stdout: active video id:PATH lines whose video id exists in the reference list." >&2
+			exit 0
+			;;
+		--)
+			shift ||:
+			arguments+=("$@")
+			break
+			;;
+		-*)
+			echo "Unknown option: $1" >&2
+			echo "Usage: $0 [--run-dir DIR] REFERENCE_MATCHES_TXT" >&2
+			exit 1
+			;;
+		*)
+			arguments+=("$1")
+			shift ||:
+			;;
+	esac
+done
+
+set -- "${arguments[@]}"
+
+if (( $# < 1 )); then
+	echo "Usage: $0 [--run-dir DIR] REFERENCE_MATCHES_TXT" >&2
+	exit 1
+fi
+
+run_dir="${run_dir:-./undownloader-reduplicator-$__current_date}"
+
+matches_reference="$1"
+matches_active="${2:-./reduplicator-matches.txt}"
+
+if [[ ! -f "$matches_active" ]]; then
+	echo "Missing $matches_active in the active library. Run undownloader-reduplicator-index > reduplicator-matches.txt" >&2
+	exit 1
+fi
+
+if [[ ! -f "$matches_reference" ]]; then
+	echo "Missing reference matches file: $matches_reference" >&2
+	exit 1
+fi
+
+mkdir --parents -- "$run_dir" || exit 1
+
+only_in_active="$run_dir/matches-only-in-active.txt"
+only_in_reference="$run_dir/matches-only-in-reference.txt"
+warnings="$run_dir/warnings.log"
+filter_log="$run_dir/filter.log"
+
+: >| "$only_in_active"
+: >| "$only_in_reference"
+[[ -f "$warnings" ]] || : >| "$warnings"
+[[ -f "$filter_log" ]] || : >| "$filter_log"
+
+declare -A ids_active=()
+declare -A ids_reference=()
+declare -A paths_reference=()
+
+reference_root="$(dirname -- "$matches_reference")"
+reference_root="$(realpath -- "$reference_root"; printf x)"
+reference_root="${reference_root%$'\n'x}"
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+	[[ -n "$line" ]] || continue
+	active_path="${line#*: }"
+	active_path="$(unmask_path "$active_path"; printf x)"
+	active_path="${active_path%x}"
+	is_ignored_sidecar "$active_path" && continue
+	ids_active["${line%%: *}"]=1
+done < "$matches_active"
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+	[[ -n "$line" ]] || continue
+	reference_path="${line#*: }"
+	reference_path="$(unmask_path "$reference_path"; printf x)"
+	reference_path="${reference_path%x}"
+	is_ignored_sidecar "$reference_path" && continue
+	ids_reference["${line%%: *}"]=1
+	paths_reference["$reference_path"]=1
+done < "$matches_reference"
+
+path_in_reference_tree() {
+	local raw="$1"
+
+	[[ -n "${paths_reference[$raw]:-}" ]] && return 0
+	[[ "$raw" == "$reference_root" || "$raw" == "$reference_root"/* ]]
+}
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+	[[ -n "$line" ]] || continue
+	id="${line%%: *}"
+	active_path="${line#*: }"
+	active_path="$(unmask_path "$active_path"; printf x)"
+	active_path="${active_path%x}"
+	is_ignored_sidecar "$active_path" && continue
+
+	if [[ -n "${ids_reference[$id]:-}" ]]; then
+		if path_in_reference_tree "$active_path"; then
+			log_warning "skip, path is in the reference tree (reference is not moved): $active_path"
+			continue
+		fi
+		printf '%s\n' "$line"
+	else
+		printf '%s\n' "$line" >> "$only_in_active"
+	fi
+done < "$matches_active"
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+	[[ -n "$line" ]] || continue
+	id="${line%%: *}"
+	reference_path="${line#*: }"
+	reference_path="$(unmask_path "$reference_path"; printf x)"
+	reference_path="${reference_path%x}"
+	is_ignored_sidecar "$reference_path" && continue
+	[[ -n "${ids_active[$id]:-}" ]] && continue
+	printf '%s\n' "$line" >> "$only_in_reference"
+done < "$matches_reference"

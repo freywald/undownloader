@@ -1,0 +1,391 @@
+#!/bin/bash
+
+source -- "$(realpath "$(dirname -- "${BASH_SOURCE[-1]}")/../../")/library/base" || exit 1
+__set_script_path 1
+__enable_error_handler
+function local_exit_failsafe() { __exit_failsafe; exit 1; }
+
+source -- "$__script_path/library/undownloader-reduplicator-library" || exit 1
+
+simulate=false
+hash_streams=false
+arguments=()
+run_dir=""
+reference_matches=""
+debug=false
+
+usage() {
+    echo "Usage: $0 [--simulate] [--enable-media-hashing] [--run-dir DIR] [--reference REFERENCE_MATCHES] reduplicator-matches.txt [TARGET_DIR] [video id]" >&2
+    echo "  Run from the active library. Reference library is not modified." >&2
+    echo "  Moves each matched media file plus same-stem sidecars (\$stem.*), not the whole folder." >&2
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        --simulate)
+            simulate=true
+            shift ||:
+            ;;
+        --enable-media-hashing)
+            hash_streams=true
+            shift ||:
+            ;;
+        --run-dir)
+            if [[ -z "${2-}" || "$2" == -* ]]; then
+                usage
+                exit 1
+            fi
+            run_dir="$2"
+            shift 2 ||:
+            ;;
+        --reference)
+            if [[ -z "${2-}" || "$2" == -* ]]; then
+                usage
+                exit 1
+            fi
+            reference_matches="$2"
+            shift 2 ||:
+            ;;
+        --help)
+            usage
+            exit 0
+            ;;
+        --debug)
+            debug=true
+            __debug=true
+            shift ||:
+            ;;
+        -)
+            arguments+=("$1")
+            shift ||:
+            ;;
+        --)
+            shift ||:
+            arguments+=("$@")
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            arguments+=("$1")
+            shift ||:
+            ;;
+    esac
+done
+
+set -- "${arguments[@]}"
+
+if (( $# < 1 )); then
+    usage
+    exit 1
+fi
+
+matches_file="$1"
+target_directory="${2:-../undownloader-reduplicator-duplicates-$__current_date}/"
+video_id="${3-}"
+run_dir="${run_dir:-./undownloader-reduplicator-$__current_date}/"
+moved=0
+declare -A ref_paths=()
+declare -A unit_id=()
+declare -A unit_dir=()
+declare -A unit_stem=()
+declare -A unit_file=()
+
+mkdir --parents -- "$run_dir" || exit 1
+
+warnings="$run_dir/warnings.log"
+errors="$run_dir/errors.log"
+hash_match_log="$run_dir/media-hash-match.log"
+hash_nomatch_log="$run_dir/media-hash-no-match.log"
+move_log="$run_dir/move.log"
+defect_log="$run_dir/defect-media.log"
+unresolved="$run_dir/unresolved.txt"
+
+[[ -f "$warnings" ]] || : >| "$warnings"
+[[ -f "$errors" ]] || : >| "$errors"
+: >| "$hash_match_log"
+: >| "$hash_nomatch_log"
+: >| "$move_log"
+[[ -f "$defect_log" ]] || : >| "$defect_log"
+[[ -f "$unresolved" ]] || : >| "$unresolved"
+
+if [[ -n "$reference_matches" ]]; then
+    if [[ ! -f "$reference_matches" ]]; then
+        echo "Missing --reference $reference_matches" >&2
+        exit 1
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        ref_id="${line%%: *}"
+        ref_path="${line#*: }"
+        ref_path="$(unmask_path "$ref_path"; printf x)"
+        ref_path="${ref_path%x}"
+        is_ignored_sidecar "$ref_path" && continue
+        ref_paths["$ref_id"]+="${ref_path}"$'\n'
+    done < "$reference_matches"
+fi
+
+if [[ "$matches_file" == "-" ]]; then
+    matches_file="/dev/stdin"
+fi
+
+if ! $simulate && ! $debug; then
+    mkdir --parents -- "$target_directory" || exit 1
+fi
+
+stream_hashes() {
+    local file="$1"
+    local kind="$2"
+    local i=0
+    local line
+    local any=0
+
+    [[ -f "$file" ]] || return 1
+    while true; do
+        line="$(ffmpeg -v error -nostdin -i "$file" -map "0:${kind}:${i}" -f hash -hash sha256 - 2>/dev/null ||:)"
+        [[ -n "$line" ]] || break
+        any=1
+        printf '%s\n' "$line"
+        i=$((i + 1)) ||:
+    done
+    (( any == 1 ))
+}
+
+is_video_media() {
+    ffprobe -v error -select_streams v -show_entries stream=codec_name -of csv=p=0 -- "$1" 2>/dev/null | grep -Eiq 'h264|avc|hevc|h265|vp8|vp9|av1|mpeg2video|mpeg4'
+}
+
+hashes_intersect() {
+    local left="$1"
+    local right="$2"
+    local h
+
+    [[ -n "$left" && -n "$right" ]] || return 1
+    while IFS= read -r h; do
+        [[ -n "$h" ]] || continue
+        printf '%s\n' "$right" | grep -F -x -q -- "$h" && return 0
+    done <<<"$left"
+    return 1
+}
+
+media_encode_match() {
+    local a="$1"
+    local b="$2"
+    local do_hash="$3"
+    local sa sb a_audio b_audio a_video b_video
+
+    [[ -f "$a" && -f "$b" ]] || return 1
+
+    sa="$(stat -c '%s' -- "$a")"
+    sb="$(stat -c '%s' -- "$b")"
+
+    if [[ "$sa" == "$sb" ]]; then
+        __info "Same size (%s bytes), binary compare" "$sa"
+        if cmp -s -- "$a" "$b"; then
+            __info "Binary identical"
+            return 0
+        fi
+        __info "Same size, different bytes"
+    else
+        __info "Different size (%s vs %s), skip binary compare" "$sa" "$sb"
+    fi
+
+    if [[ "$do_hash" != "true" ]]; then
+        __info "Stream hashing disabled; encode not compared"
+        return 1
+    fi
+
+    __info "Comparing decoded streams"
+    a_audio="$(stream_hashes "$a" a)" || return 2
+    b_audio="$(stream_hashes "$b" a)" || return 2
+
+    if is_video_media "$a" || is_video_media "$b"; then
+        a_video="$(stream_hashes "$a" v)" || return 2
+        b_video="$(stream_hashes "$b" v)" || return 2
+        hashes_intersect "$a_video" "$b_video" || return 1
+        hashes_intersect "$a_audio" "$b_audio" || return 1
+        return 0
+    fi
+
+    hashes_intersect "$a_audio" "$b_audio"
+}
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    id="${line%%: *}"
+    file_path="${line#*: }"
+    file_path="$(unmask_path "$file_path"; printf x)"
+    file_path="${file_path%x}"
+    is_ignored_sidecar "$file_path" && continue
+
+    if [[ -n "$video_id" && "$id" != "$video_id" ]]; then
+        continue
+    fi
+
+    src_dir="$(dirname -- "$file_path"; printf x)"
+    src_dir="${src_dir%$'\n'x}"
+    stem="$(file_stem "$file_path")"
+    key="$src_dir"$'\t'"$stem"
+
+    __debug 'LINE id=%q' "$id"
+    __debug 'LINE raw_path=%q' "$file_path"
+    __debug 'LINE pwd=%q exists_file=%s' "$PWD" "$( [[ -e "$file_path" || -L "$file_path" ]] && echo yes || echo no )"
+    __debug 'LINE src_dir=%q exists_dir=%s' "$src_dir" "$( [[ -d "$src_dir" ]] && echo yes || echo no )"
+    __debug 'LINE stem=%q key=%q' "$stem" "$key"
+    __debug 'LINE src_dotslash=%q exists=%s' "./$src_dir" "$( [[ -d "./$src_dir" ]] && echo yes || echo no )"
+
+    rel="$(realpath --relative-to=. -- "$src_dir"; printf x)"
+    rel="${rel%$'\n'x}"
+    __debug 'LINE rel_src_to_cwd=%q' "$rel"
+
+    if ! dir_has_video_id "$src_dir" "$id" "$stem"; then
+        __debug 'UNIT dir_has_video_id FAIL dir=%q want=%q stem=%q' "$src_dir" "$id" "$stem"
+        log_error "source unit has no media for $id: $src_dir / $stem" "$move_log"
+        continue
+    fi
+    __debug 'UNIT dir_has_video_id ok dir=%q want=%q stem=%q' "$src_dir" "$id" "$stem"
+
+    if $simulate && [[ -n "$reference_matches" ]]; then
+        encode_ok=false
+        compared=false
+        while IFS= read -r ref_file; do
+            [[ -n "$ref_file" && -f "$ref_file" ]] || continue
+            compared=true
+            __info "Comparing: %s" "$file_path"
+            __info "      with: %s" "$ref_file"
+            if media_encode_match "$file_path" "$ref_file" "$hash_streams"; then
+                __info "Match (same bytes or same streams): %s" "$id"
+                printf 'video id %s match\n  active:    %s\n  reference: %s\n' "$id" "$file_path" "$ref_file" >> "$hash_match_log"
+                encode_ok=true
+                break
+            else
+                st=$?
+                if (( st == 2 )); then
+                    log_warning "video id $id stream decode failed: $file_path vs $ref_file" "$defect_log"
+                    printf "The file '%s' failed to decode audio/video streams.\nFile: \t%s\n" "$(basename -- "$file_path")" "$file_path" >> "$unresolved"
+                    continue
+                fi
+                if [[ "$hash_streams" != "true" ]]; then
+                    __info "Same video id, not byte-identical, hash skipped: %s" "$id"
+                    printf 'video id %s not byte-identical, stream hash skipped\n  active:    %s\n  reference: %s\n'  "$id" "$file_path" "$ref_file" >> "$hash_nomatch_log"
+                else
+                    __info "Differ (other encode or container streams): %s" "$id"
+                    printf 'video id %s differ\n  active:    %s\n  reference: %s\n'  "$id" "$file_path" "$ref_file" >> "$hash_nomatch_log"
+                fi
+            fi
+        done <<<"${ref_paths[$id]:-}"
+
+        if ! $compared; then
+            log_warning "video id $id has no reference file to compare: $file_path" "$hash_nomatch_log"
+        elif ! $encode_ok; then
+            if [[ "$hash_streams" != "true" ]]; then
+                log_warning "video id $id not byte-identical; stream hash skipped (still moving): $file_path" "$hash_nomatch_log"
+            else
+                log_warning "video id $id container/encode differs (still moving): $file_path" "$hash_nomatch_log"
+            fi
+        fi
+    fi
+
+    unit_id["$key"]="$id"
+    unit_dir["$key"]="$src_dir"
+    unit_stem["$key"]="$stem"
+    unit_file["$key"]="$file_path"
+done < "$matches_file"
+
+for key in "${!unit_id[@]}"; do
+    id="${unit_id[$key]}"
+    src_dir="${unit_dir[$key]}"
+    stem="${unit_stem[$key]}"
+    file_path="${unit_file[$key]}"
+
+    [[ -d "$src_dir" ]] || {
+        __debug 'MOVE skip, src_dir missing: %q' "$src_dir"
+        continue
+    }
+
+    rel="$(realpath --relative-to=. -- "$src_dir"; printf x)"
+    rel="${rel%$'\n'x}"
+    if [[ "$rel" == "." ]]; then
+        dest_parent="$target_directory"
+    else
+        dest_parent="$target_directory/$rel"
+    fi
+
+    __debug 'MOVE id=%q' "$id"
+    __debug 'MOVE file_path=%q' "$file_path"
+    __debug 'MOVE PWD=%q' "$PWD"
+    __debug 'MOVE src_dir=%q' "$src_dir"
+    __debug 'MOVE rel_src_to_cwd=%q' "$rel"
+    __debug 'MOVE dest_parent=%q' "$dest_parent"
+
+    files=()
+    for f in "$src_dir"/*; do
+        [[ -e "$f" || -L "$f" ]] || continue
+        is_ignored_sidecar "$f" && continue
+        base="${f##*/}"
+        [[ "$base" == "${stem}."* || "$base" == "$stem" ]] || continue
+        files+=("$f")
+    done
+    __debug 'MOVE stem=%q file_count=%s' "$stem" "${#files[@]}"
+    (( ${#files[@]} > 0 )) || continue
+
+    list=""
+    for f in "${files[@]}"; do
+        list+=$(printf '\n    %s' "${f##*/}")
+    done
+
+    msg="$(printf 'video id %s\n  unit: %s\n  from: %s\n  to:   %s\n  files:%s' "$id" "$stem" "$src_dir" "$dest_parent" "$list")"
+
+    if $simulate; then
+        __print "%s" "$msg"
+        printf '%s\n' "$msg" >> "$move_log"
+        moved=$((moved + 1)) ||:
+        continue
+    fi
+
+    if $debug; then
+        __debug 'mkdir --parents -- %q' "$dest_parent"
+    elif ! mkdir --parents -- "$dest_parent"; then
+        log_error "Failed mkdir: $dest_parent" "$move_log"
+        continue
+    fi
+
+    ok=true
+    for f in "${files[@]}"; do
+        base="${f##*/}"
+        dest="$dest_parent/$base"
+        i=0
+        while [[ -e "$dest" || -L "$dest" ]]; do
+            i=$((i + 1)) ||:
+            if [[ "$base" == *.* ]]; then
+                dest="$dest_parent/${base%.*}_$i.${base##*.}"
+            else
+                dest="$dest_parent/${base}_$i"
+            fi
+        done
+
+        __debug 'MOVE dest=%q' "$dest"
+
+        if $debug; then
+            __debug 'mv --verbose -- %q %q' "$f" "$dest"
+        elif mv --verbose -- "$f" "$dest"; then
+            printf 'moved: %s -> %s\n' "$f" "$dest" >> "$move_log"
+        else
+            log_error "Failed: $f -> $dest" "$move_log"
+            ok=false
+        fi
+    done
+
+    if $ok; then
+        __info "%s" "$msg"
+        moved=$((moved + 1)) ||:
+    fi
+done
+
+if (( moved == 0 )); then
+    __info "No units to move (no matching video id in this tree, or every candidate failed the check)."
+    exit 99
+fi
